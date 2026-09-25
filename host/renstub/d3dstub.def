@@ -1,0 +1,20 @@
+LIBRARY d3dstub
+EXPORTS
+    RenderDLLSetup
+    GetSupportedModes
+    FreeModeList
+    R3D_PublishModels
+    R3D_PublishWorldModels
+    R3D_PublishSprites
+    R3D_PublishFog
+    R3D_PublishSkyFog
+    R3D_PublishLightAdd
+    R3D_PublishFolder2D
+    R3D_PublishInterfaceOnly
+    R3D_RayCast
+    R3D_PublishPrims
+R3D_PublishScope
+    R3D_PublishLights
+    R3D_PublishLightScale
+    R3D_PublishObjectSkins
+    R3D_ForgetObject

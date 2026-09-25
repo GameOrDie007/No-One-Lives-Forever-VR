@@ -1,0 +1,49 @@
+# Staged copy of the retail game (~1 GB, and not ours to redistribute).
+# Recreate with: robocopy <your NOLF install> <repo>\game /E
+game/
+
+# A SECOND staged copy of the retail game, made by tools/canopy-retail.ps1
+# so the reference build can be run without ever writing to the player's
+# own install. Same rule as game/: ~1.1 GB of Monolith's data, never ours
+# to redistribute. Recreate by running that script; delete it freely.
+retail-ref/
+
+# Upstream source trees carry their own git history - tracked separately,
+# not as submodules, so each stays independently diffable against upstream.
+src/
+
+# Build intermediates and per-run logs.
+build/
+logs/
+
+.claude/settings.local.json
+
+# Host build output and captured proof images.
+host/vrhost.exe
+host/xrprobe.exe
+host/eyeprobe.exe
+host/openxr_loader.dll
+libs/
+host/nolfvr.exe
+host/nolfvr-aug13.exe
+
+# The d3d.ren pass-through shim's build output. Source is in host/renshim/.
+game/d3dshim.ren
+
+# Third-party binaries dropped in for analysis - not ours to redistribute.
+*.apk
+
+# Local reference material - not ours to redistribute.
+other-port-device/
+tools/crashtools/*.exe
+tools/crashtools/*.obj
+
+# Python bytecode from the harness scripts
+tools/__pycache__/
+
+# Comparison screenshot sets (retail frames are not ours to redistribute).
+shots/
+
+# Release archives and the assembled public tree (built by tools/make-release.ps1
+# and tools/make-public-tree.ps1 - never sources, always regenerated).
+dist/

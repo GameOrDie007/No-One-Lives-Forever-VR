@@ -1,0 +1,26 @@
+No One Lives Forever VR
+
+The client shell in this project is derived from the NO ONE LIVES FOREVER
+Source Code v1.003 (Monolith Productions, 2001) by way of
+haekb/nolf1-modernizer, and REMAINS BOUND BY THE EULA IN THAT SOURCE RELEASE.
+
+That license is not reproduced here, and it is not in the source release's
+readme.txt either: that file lists an EULA section in its contents and then
+prints its introduction again in place of the terms. The obligation is real
+regardless - it was accepted when the source was obtained - but if you need to
+read the text, get it from the original distribution rather than from anything
+in this tree.
+
+That license is NON-COMMERCIAL. This project is never to be sold, and no
+payment may be taken for it or for access to it.
+
+The D3D11 renderer (host/renstub), the OpenXR host (host/) and the tools are
+original work by this project's authors. They are offered under the same terms
+as the whole, because a build of this project is a derivative of the whole.
+
+NO GAME DATA IS INCLUDED, in this repository or in any release archive. You
+supply your own copy of the game.
+
+Rights in No One Lives Forever are held today by Nightdive Studios / Ziggurat
+Interactive. This is an unofficial, non-commercial fan project with no
+affiliation to them, to Monolith Productions, or to Fox Interactive.
