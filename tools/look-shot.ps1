@@ -148,6 +148,8 @@ $Game = Join-Path $Root 'game'
 # restores it too).
 $cfgLive = Join-Path $Game 'autoexec.cfg'
 $cfgSnap = Join-Path $Root 'logs\autoexec.headset.cfg'
+# A fresh install has no logs folder yet; the snapshot below needs one.
+New-Item -ItemType Directory -Force (Split-Path $cfgSnap) | Out-Null
 if (Test-Path $cfgSnap) { Copy-Item $cfgSnap $cfgLive -Force }
 elseif (Test-Path $cfgLive) { Copy-Item $cfgLive $cfgSnap -Force }
 
@@ -159,14 +161,22 @@ elseif (Test-Path $cfgLive) { Copy-Item $cfgLive $cfgSnap -Force }
 $OutDir = Split-Path (Join-Path $Root $Out) -Parent
 if ($OutDir) { New-Item -ItemType Directory -Force $OutDir | Out-Null }
 
-Get-Process lithtech -ErrorAction SilentlyContinue | ForEach-Object { try { $_.Kill() } catch {} }
+# NEVER KILL A GAME THIS SCRIPT DID NOT START. A running lithtech.exe is most
+# likely a player's session; stop and say so instead of closing it.
+if (Get-Process lithtech -ErrorAction SilentlyContinue) {
+    Write-Host '  STOPPED: the game is already running (a player may be in it). Close it first; nothing was touched.' -ForegroundColor Red
+    exit 1
+}
 Get-Process python   -ErrorAction SilentlyContinue |
     Where-Object { $_.CommandLine -like '*fakehost*' } | ForEach-Object { try { $_.Kill() } catch {} }
 Start-Sleep -Milliseconds 600
 
 $fakeLog = Join-Path $Root 'logs\fakehost-look.log'
 New-Item -ItemType Directory -Force (Split-Path $fakeLog) | Out-Null
-$fakeArgs = @((Join-Path $PSScriptRoot 'fakehost.py'))
+# QUOTED: Start-Process joins -ArgumentList with spaces and quotes nothing
+# (PowerShell 5.1), so a tools folder with a space in its path split in two
+# and python was handed half a file name.
+$fakeArgs = @(('"' + (Join-Path $PSScriptRoot 'fakehost.py') + '"'))
 if ($Sweep) { }                      # no --static: fakehost sweeps by itself
 else        { $fakeArgs += @('--static', $Look) }
 if ($Ipd -ge 0) { $fakeArgs += @('--ipd', "$Ipd") }
@@ -306,9 +316,12 @@ for ($s = 0; $s -lt $Wait; $s++) {
 # refused to a process that is not itself in the foreground, and when it was
 # refused the keys went to whatever window WAS in front - two captures in a
 # row came back as the untouched main menu, and the DOWN/ENTER had been
-# typed into something else. Now: try, check with GetForegroundWindow, retry
-# with the ALT-tap that Windows accepts as a user gesture, and if the game
-# still is not in front, REFUSE to send anything.
+# typed into something else. Now: try, check with GetForegroundWindow, retry,
+# and if the game still is not in front, REFUSE to send anything.
+#
+# NO ALT TAP. It used to send one between tries to win the foreground, but
+# that key goes to whatever window IS in front - by definition not the game -
+# and a person working in it gets their menu bar opened under them.
 if (-not $p.HasExited -and $Keys.Count) {
     $p.Refresh()
     $focused = $false
@@ -317,16 +330,8 @@ if (-not $p.HasExited -and $Keys.Count) {
 [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
 [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int n);
 [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
-[DllImport("user32.dll")] public static extern void keybd_event(byte vk, byte scan, uint flags, UIntPtr extra);
 '@
         for ($try = 0; $try -lt 6 -and -not $focused; $try++) {
-            if ($try -gt 0) {
-                # An ALT press and release counts as input from the user, after
-                # which the foreground request is honoured.
-                [W.Fg2]::keybd_event(0x12, 0, 0, [UIntPtr]::Zero)
-                [W.Fg2]::keybd_event(0x12, 0, 2, [UIntPtr]::Zero)
-                Start-Sleep -Milliseconds 150
-            }
             [W.Fg2]::ShowWindow($p.MainWindowHandle, 9) | Out-Null
             [W.Fg2]::SetForegroundWindow($p.MainWindowHandle) | Out-Null
             Start-Sleep -Milliseconds 700
@@ -339,6 +344,12 @@ if (-not $p.HasExited -and $Keys.Count) {
     }
     foreach ($k in $Keys) {
         if ($p.HasExited) { Write-Host "  game exited before '$k'" -ForegroundColor Red; break }
+        # EVERY key, not just the first: focus can move mid-sequence (a click,
+        # a notification), and a key sent then lands in someone else's window.
+        if ([W.Fg2]::GetForegroundWindow() -ne $p.MainWindowHandle) {
+            Write-Host "  STOPPED before '$k': the game is no longer in front; the rest NOT sent" -ForegroundColor Red
+            break
+        }
         Write-Host "  sending $k" -ForegroundColor Cyan
         [System.Windows.Forms.SendKeys]::SendWait($k)
         Start-Sleep -Seconds $KeyDelay
@@ -346,12 +357,17 @@ if (-not $p.HasExited -and $Keys.Count) {
 }
 
 if (-not $p.HasExited) {
-    & (Join-Path $PSScriptRoot 'window-shot.ps1') -Out (Join-Path $Root $Out) -Width $ResW -Height $ResH |
-        ForEach-Object { Write-Host ("    " + $_) -ForegroundColor DarkGray }
+    # A FAILED GRAB MUST NOT SKIP THE CLEAN-UP BELOW. A minimized window made
+    # window-shot throw, and the game and the fake host were left running.
+    try {
+        & (Join-Path $PSScriptRoot 'window-shot.ps1') -Out (Join-Path $Root $Out) -Width $ResW -Height $ResH |
+            ForEach-Object { Write-Host ("    " + $_) -ForegroundColor DarkGray }
+    } catch { Write-Host "    window grab failed: $_" -ForegroundColor Yellow }
 }
 try { $p.CloseMainWindow() | Out-Null } catch {}
 Start-Sleep -Seconds 2
-Get-Process lithtech -ErrorAction SilentlyContinue | ForEach-Object { try { $_.Kill() } catch {} }
+# Only the process this script started.
+if (-not $p.HasExited) { try { $p.Kill() } catch {} }
 if ($fake -and -not $fake.HasExited) { try { $fake.Kill() } catch {} }
 
 $live = Join-Path $Game 'logs\renstub.log'

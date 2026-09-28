@@ -35,6 +35,10 @@ void R3D_Destroy();
 
 // The back buffer changed size, so the depth buffer has to follow it.
 void R3D_SetTarget(ID3D11RenderTargetView* pRTV, int nW, int nH);
+// Pixels per engine coordinate, per axis: the camera rectangle the engine hands
+// R3D_DrawWorld is in its mode's coordinates, the target may be larger
+// (+StubRenderScale100). 1,1 when they are the same.
+void R3D_SetScale(float fX, float fY);
 
 // Walk the world and build one vertex buffer. Safe to call repeatedly; it
 // rebuilds only when the world pointer changes, which is what a level load
@@ -98,6 +102,19 @@ bool R3D_HasTexture(uint32_t pKey);
 // state too, so the level was being drawn from above its own origin behind the
 // menu text. See R3D_DrawWorld for what is substituted.
 void R3D_DrawScopePass();	// the third pass, into the scope's texture; see render3d.cpp
+// The reflection for one eye, into that eye's mirror texture: called before
+// the eye's own world pass with the SAME arguments. See g_bMirrors.
+void R3D_DrawMirrorPass(const float* pPos, const float* pQuat,
+						float fFovX, float fFovY, float fNear, float fFar,
+						int nLeft, int nTop, int nRight, int nBottom,
+						const float* pTan4, int nEye);
+// +StubMirrors 0 draws the mirror faces as the plain glass they were.
+void R3D_SetMirrors(int b);
+void R3D_SetMirrorDebug(int n);		// +StubMirrorDebug 1: green = a reflection declared, red = none
+void R3D_SetMirrorScale(float f);		// +StubMirrorScale100: the texture's size as a fraction of the eye's
+void R3D_SetMirrorRange(float f);		// +StubMirrorRange: farthest mirror drawn, world units
+void R3D_SetMirrorStereo(int b);		// +StubMirrorStereo 0: one reflection, both eyes
+void R3D_SetMirrorOverlay(float f);		// +StubMirrorOverlay100: the face's own texture over the reflection
 void R3D_DrawWorld(const float* pPos, const float* pQuat,
                    float fFovX, float fFovY, float fNear, float fFar,
                    int nLeft, int nTop, int nRight, int nBottom,
@@ -160,6 +177,11 @@ void R3D_SetSkinNameProbe(int b);
 void R3D_SetSkinFromButes(int b);
 void R3D_SetHideViewArms(int b);
 void R3D_SetDrawBody(int b);
+void R3D_SetMirrorBody(int b);
+bool R3D_PausedWorldPose(int nEye, const float* pSceneQuat, float* pPos, float* pQuat,
+						 float* pFov2, float* pNear, float* pFar, float* pTan4, int* pbTan);
+void R3D_MirrorFrameEnd();
+bool R3D_MirrorReady(int nEye);	// +StubMirrorBody 1: the player's body in mirrors
 void R3D_SetHideHead(int b);
 
 // Turn lightmaps off entirely, so every polygon draws with the stand-in
@@ -220,6 +242,9 @@ void R3D_SetEnvWorld(float fRepU, float fRepV, float fFlow);
 void R3D_SetSkipBatch(int n);
 void R3D_SetEnvCoord(float f);
 void R3D_SetEnvMap(int b, float fScale, float fPan);
+void R3D_SetModelEnv(int b, float fScale);
+void R3D_SetModelLightDir(int b);
+extern "C" void __cdecl R3D_PublishModelEnvMap(const char* psz);
 void R3D_SetSkyFogAllow(int b);
 extern "C" void __cdecl R3D_PublishFog(int bEnable, float r, float g, float b,
 									   float fNear, float fFar);

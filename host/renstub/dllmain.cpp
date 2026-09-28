@@ -419,7 +419,8 @@ namespace
 static void DrawHeldMarker();
 namespace
 {
-	uint32_t g_nScreenW = 0, g_nScreenH = 0;
+	uint32_t g_nScreenW = 0, g_nScreenH = 0;	// the engine's mode: its coordinates
+	UINT     g_nPixW = 0, g_nPixH = 0;			// the back buffer's pixels (StubRenderScale100)
 	int g_bTrace17      = 0;		// call the real RenderScene and watch the words
 	int g_bWorldDump    = 1;		// follow scene word 13 into the world
 	int g_bWorldSeen    = 0;		// one-shot: the first non-null world handle
@@ -739,10 +740,33 @@ namespace
 		// stretches to whatever the window happens to be. The window was
 		// observed changing size mid-run; this removes that problem rather than
 		// handling it.
+		// THE PIXELS ARE NOT THE COORDINATES. +StubRenderScale100 N makes the
+		// back buffer N% of the engine's mode in each direction while the engine
+		// goes on addressing it in mode coordinates: the 2D layer maps those
+		// through the viewport and the world passes scale their rectangles
+		// (R3D_SetScale), so the menus, HUD and subtitles lay out exactly as at
+		// 100 and the world gets the extra pixels. The launcher sets it from the
+		// headset's recommended eye size, because the engine cannot run at that
+		// size itself: its bitmap font code refuses a strip wider than about
+		// 5,000 px, so menu text past 4x could not keep up with the layout
+		// (desk, 26 September).
+		{
+			int nScale = CmdLineInt("StubRenderScale100", 100);
+			if (nScale < 50)  nScale = 50;
+			if (nScale > 250) nScale = 250;
+			g_nPixW = (UINT)((nW * (UINT)nScale / 100u) & ~1u);
+			g_nPixH = (UINT)( nH * (UINT)nScale / 100u);
+			if (g_nPixW > 16384) g_nPixW = 16384;
+			if (g_nPixH > 16384) g_nPixH = 16384;
+			if (g_nPixW < nW / 2 || g_nPixH < nH / 2) { g_nPixW = nW; g_nPixH = nH; }
+			Log("  device: render scale %d%% - back buffer %ux%u pixels for a %ux%u engine mode",
+				nScale, g_nPixW, g_nPixH, nW, nH);
+		}
+
 		DXGI_SWAP_CHAIN_DESC sd{};
 		sd.BufferCount       = 2;
-		sd.BufferDesc.Width  = nW;
-		sd.BufferDesc.Height = nH;
+		sd.BufferDesc.Width  = g_nPixW;
+		sd.BufferDesc.Height = g_nPixH;
 		sd.BufferDesc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
 		sd.BufferUsage       = DXGI_USAGE_RENDER_TARGET_OUTPUT;
 		sd.OutputWindow      = hWnd;
@@ -841,16 +865,18 @@ namespace
 			Log("  the 3D path did not come up; the world will stay black.");
 		if (!R2D_Create(g_pDev, g_pCtx, &Log))
 			Log("  device: the 2D path did not come up - blits will do nothing");
-		R2D_SetTarget(g_pRTV, (int)nW, (int)nH);
+		R2D_SetTarget(g_pRTV, (int)g_nPixW, (int)g_nPixH, (int)nW, (int)nH);
 
 		// Hand the finished frame to the host directly instead of letting it
 		// photograph our window. Never fatal: if this does not come up the
 		// host falls back to window capture, which is what it does today.
+		// g_nScreen stays the MODE: it is what the engine is told the screen is.
 		g_nScreenW = nW; g_nScreenH = nH;
-		if (g_bEyeShare && !ES_Create(g_pDev, g_pCtx, nW, nH, &Log))
+		if (g_bEyeShare && !ES_Create(g_pDev, g_pCtx, g_nPixW, g_nPixH, &Log))
 			Log("  device: the shared eye texture did not come up -"
 				" the host will fall back to window capture");
-		R3D_SetTarget(g_pRTV, (int)nW, (int)nH);
+		R3D_SetTarget(g_pRTV, (int)g_nPixW, (int)g_nPixH);
+		R3D_SetScale((float)g_nPixW / (float)nW, (float)g_nPixH / (float)nH);
 
 		return true;
 	}
@@ -2943,6 +2969,7 @@ namespace
 
 	void EndFrameScenes()
 	{
+		R3D_MirrorFrameEnd();
 		if (g_nSceneInFrame == 2) ++g_nFramesTwo;
 		g_nSceneInFrame = 0;
 		g_nPrevInFrame = -1;
@@ -3337,6 +3364,29 @@ static int   __cdecl s_RenderScene(void* pScene)
 			// THE SCOPE FIRST, once a frame, so both eyes' lens discs sample a
 			// finished picture. Its pass carries this scene's near and far.
 			if (sd[0] == 1 && g_nSceneInFrame == 1) R3D_DrawScopePass();
+			// THE MIRROR, before each eye, with the eye's own camera: the
+			// eye's world pass then samples a finished reflection.
+			if (sd[0] == 1)
+				R3D_DrawMirrorPass(&f[48], &f[51], f[45], f[46], f[26], f[47],
+								   vL, vT, vR, vB, pTan, nEyeThis);
+			else if (sd[0] == 2)
+			{
+				// A MENU OVER A LOADED LEVEL: the world under it is drawn from
+				// the last pose the eye saw it from, and so is its mirror.
+				float wp[3], wq[4], wf[2], wn = 0.0f, wfr = 0.0f, wt[4];
+				int bt = 0;
+				const bool bPose = R3D_PausedWorldPose(nEyeThis, &f[51], wp, wq, wf, &wn, &wfr, wt, &bt);
+				if (bPose)
+					R3D_DrawMirrorPass(wp, wq, wf[0], wf[1], wn, wfr,
+									   vL, vT, vR, vB, bt ? wt : nullptr, nEyeThis);
+				static int s_nSaidPM = 0;
+				if (R3D_HaveWorld() && (s_nSaidPM++ % 120) == 0 && s_nSaidPM < 4000)
+				{
+					Log("  R3D MIRROR: paused scene, eye %d - world pose %s, pos (%.0f %.0f %.0f), reflection %s",
+						nEyeThis, bPose ? "found" : "NOT found", wp[0], wp[1], wp[2],
+						R3D_MirrorReady(nEyeThis) ? "drawn" : "NOT drawn");
+				}
+			}
 			R3D_DrawWorld(&f[48], &f[51], f[45], f[46], f[26], f[47],
 						  vL, vT, vR, vB,
 						  pTan, nEyeThis, (sd[0] == 2) ? 1 : 0);
@@ -5870,7 +5920,7 @@ BOOL APIENTRY DllMain(HMODULE hSelf, DWORD nReason, LPVOID)
 	// head and keeps the legs. The bind positions are read in the skinning
 	// loop below the hide site; wiring them up to it is the piece of work.
 	// "Show body" on the VR page turns this on for anyone who wants to look.
-	R3D_SetDrawBody(CmdLineInt("StubBody", 0));
+	R3D_SetDrawBody(CmdLineInt("StubBody", 1));
 	R3D_SetHideHead(CmdLineInt("StubHideHead", 1));
 	R3D_SetFog(CmdLineInt("StubFog", 1));
 	R2D_SetDump2D(CmdLineInt("StubDump2D", 0));
@@ -5957,6 +6007,12 @@ BOOL APIENTRY DllMain(HMODULE hSelf, DWORD nReason, LPVOID)
 	// retail's 0.045. StubEnvPan100 0 stops it dead.
 	R3D_SetEnvMap(CmdLineInt("StubEnvMap", 1), CmdLineInt("StubEnvScale100", 12) / 100.0f,
 				  CmdLineInt("StubEnvPan100", 5) / 100.0f);
+	// CHROME ON THE PLAYER'S GUNS and every other model the game flags for
+	// an environment map. +StubModelEnv 0 draws them flat, as before.
+	R3D_SetModelEnv(CmdLineInt("StubModelEnv", 1), CmdLineInt("StubModelEnvScale100", 100) / 100.0f);
+	// MODELS LIT BY THE LAMPS THAT REACH THEM, from where the lamps are.
+	// +StubModelLightDir 0 is the old flat sum.
+	R3D_SetModelLightDir(CmdLineInt("StubModelLightDir", 1));
 	R3D_SetMulForce(CmdLineInt("StubMulForce", 0));
 	R3D_SetCrashTest(CmdLineInt("StubCrashTest", 0));
 	R3D_SetSkipStill(CmdLineInt("StubSkipStill", 0));
@@ -5981,6 +6037,19 @@ BOOL APIENTRY DllMain(HMODULE hSelf, DWORD nReason, LPVOID)
 	R3D_SetLightScaleTest(CmdLineInt("StubLightScale100", 0));
 	R3D_SetPubSkins(CmdLineInt("StubPubSkins", 1));
 	R3D_SetSkyOccluder(CmdLineInt("StubSkyOccluder", 1));
+	// MIRRORS: the level's "mirror overlay" faces reflect the room. 0 draws
+	// them as plain glass and runs no extra pass - the picture before this.
+	R3D_SetMirrors(CmdLineInt("StubMirrors", 1));
+	R3D_SetMirrorDebug(CmdLineInt("StubMirrorDebug", 0));
+	R3D_SetMirrorScale(CmdLineInt("StubMirrorScale100", 50) / 100.0f);
+	R3D_SetMirrorRange((float)CmdLineInt("StubMirrorRange", 1500));
+	R3D_SetMirrorStereo(CmdLineInt("StubMirrorStereo", 1));
+	R3D_SetMirrorOverlay(CmdLineInt("StubMirrorOverlay100", 100) / 100.0f);
+	R3D_SetMirrorBody(CmdLineInt("StubMirrorBody", 1));
+	Log("switches: StubMirrorBody %d (the player's body in mirrors)", CmdLineInt("StubMirrorBody", 1));
+	Log("switches: StubMirrors %d   StubMirrorScale100 %d   StubMirrorRange %d   StubMirrorStereo %d   StubMirrorOverlay100 %d",
+		CmdLineInt("StubMirrors", 1), CmdLineInt("StubMirrorScale100", 50), CmdLineInt("StubMirrorRange", 1500),
+		CmdLineInt("StubMirrorStereo", 1), CmdLineInt("StubMirrorOverlay100", 100));
 	R3D_SetLightObjects(CmdLineInt("StubLightObjects", 0));
 	R3D_SetLightDirect(CmdLineInt("StubLightDirect", 1));
 	R3D_SetLightGain(CmdLineInt("StubLightGain100", 100) / 100.0f);

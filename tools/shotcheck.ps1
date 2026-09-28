@@ -42,8 +42,12 @@ public class W {
 }
 '@
 
-foreach ($p in @(Get-Process lithtech -ErrorAction SilentlyContinue)) { try { $p.Kill() } catch {} }
-Start-Sleep -Seconds 2
+# NEVER KILL A GAME THIS SCRIPT DID NOT START. A running lithtech.exe is most
+# likely a player's session; stop and say so instead of closing it.
+if (Get-Process lithtech -ErrorAction SilentlyContinue) {
+    Write-Host '  STOPPED: the game is already running (a player may be in it). Close it first; nothing was touched.' -ForegroundColor Red
+    exit 1
+}
 
 $rez = @('NOLF.rez','NOLF2.rez','NOLFdll.rez','NOLFl.rez','custom',
          'Nolfu003.rez','Nolfcres003.rez','NolfGoty.rez','Modernizer.rez')

@@ -133,7 +133,7 @@ int main(int argc, char** argv)
 	const char* exts[] = { XR_KHR_D3D11_ENABLE_EXTENSION_NAME };
 
 	XrInstanceCreateInfo ici{ XR_TYPE_INSTANCE_CREATE_INFO };
-	strcpy_s(ici.applicationInfo.applicationName, "NOLF1 VR");
+	strcpy_s(ici.applicationInfo.applicationName, "No One Lives Forever VR");
 	ici.applicationInfo.apiVersion = XR_API_VERSION_1_0;
 	ici.enabledExtensionCount = 1;
 	ici.enabledExtensionNames = exts;

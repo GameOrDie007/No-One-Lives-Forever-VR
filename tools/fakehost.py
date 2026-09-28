@@ -247,6 +247,11 @@ def main():
                          "button held from frame 1 fires its one edge during "
                          "the intro movie and never reaches the menu - which "
                          "reads exactly like the mapping not working.")
+    ap.add_argument("--buttons-every", type=float, default=0.0, metavar="SECS",
+                    help="with --buttons-at: PULSE the buttons - held for half of "
+                         "every SECS period from --buttons-at on - so a client that "
+                         "edge-triggers sees a fresh press each period (sweeping "
+                         "the view past a target while pressing use).")
     ap.add_argument("--trigger", default=None, choices=["left", "right", "both"],
                     help="squeeze this hand's TRIGGER (analog 1.0 and the button bit) "
                          "from --trigger-at seconds in: the vehicle throttle/brake read "
@@ -505,8 +510,11 @@ def main():
             # the block was never published and the client ignored the
             # host entirely.
             if args.buttons and args.buttons_at > 0.0:
-                held = (args.buttons
-                        if (time.perf_counter() - t0) >= args.buttons_at else 0)
+                el = time.perf_counter() - t0
+                held = args.buttons if el >= args.buttons_at else 0
+                if held and args.buttons_every > 0.0:
+                    ph = ((el - args.buttons_at) % args.buttons_every) / args.buttons_every
+                    held = args.buttons if ph < 0.5 else 0
                 for h in btn_hands:
                     put_u32(O_HANDS + h * H_STRIDE + H_BUTTONS, held)
             if args.trigger:

@@ -29,10 +29,11 @@ namespace
 	inline bool RdU16(const uint8_t* p, uint32_t n, uint32_t o, uint16_t* v)
 	{ return Rd(p, n, o, v, 2); }
 
-	const uint32_t kSurfaceSize   = 53;
+	// The record's fixed part; the rest is variable (see WorldSurface).
 	const uint32_t kSurfTexture   = 36;		// u16, index into the model's list
 	const uint32_t kSurfPlane     = 38;		// u32
-	const uint32_t kSurfFlags     = 51;		// u16
+	const uint32_t kSurfEngFlags  = 42;		// u32, the engine's SURF_ bits
+	const uint32_t kSurfEffects   = 50;		// u8 count, then the strings, then the u16 type
 	const uint32_t kPlaneSize     = 16;		// {float3 normal, float dist}
 
 	// A plane normal is UNIT LENGTH. That is the whole basis of locating the
@@ -293,7 +294,7 @@ static void ParseObjectLights(const uint8_t* b, uint32_t n, uint32_t nAt,
 			// add an object to the sky. The first pointer used to win: in the
 			// GOTY beach (M16S01) that is the clouds' pointer, 288 units above
 			// the box centre and 32 under its ceiling, and everything above the
-			// horizon came out black in the opening cutscene (the headset, 22
+			// horizon came out black in the opening cutscene (headset, 22
 			// September). A dims pointer overrides any earlier choice; without
 			// one, the first pointer still stands.
 			const bool bDims = (fSkyDims[0] != 0.0f && fSkyDims[1] != 0.0f && fSkyDims[2] != 0.0f);
@@ -523,14 +524,43 @@ bool World_Surfaces(const WorldFile&, const WorldModelFile& m,
 	pOut->clear();
 	if (!m.bLocated || !m.nSurfaces) return false;
 	pOut->reserve(m.nSurfaces);
+	// VARIABLE LENGTH - see WorldSurface. The record's fixed part is 50
+	// bytes; a u8 effect count follows, then the effect strings, then the
+	// u16 surface type. A record whose texture or plane index is out of
+	// range means the walk has lost its footing, and the whole array is
+	// refused rather than half-read.
+	uint32_t o = m.nSurfaceAt;
+	const uint32_t nTex = (uint32_t)m.Textures.size();
 	for (uint32_t i = 0; i < m.nSurfaces; ++i)
 	{
-		const uint32_t o = m.nSurfaceAt + i * kSurfaceSize;
 		WorldSurface s;
+		memset(&s, 0, sizeof s);
 		if (!RdU16(b, n, o + kSurfTexture, &s.nTexture)) return false;
 		if (!RdU32(b, n, o + kSurfPlane, &s.nPlane)) return false;
-		if (!RdU16(b, n, o + kSurfFlags, &s.nFlags)) return false;
+		if (!RdU32(b, n, o + kSurfEngFlags, &s.nEngFlags)) return false;
+		if (s.nTexture >= nTex || s.nPlane >= m.nPlanes) { pOut->clear(); return false; }
+		uint8_t nEff = 0;
+		if (!Rd(b, n, o + kSurfEffects, &nEff, 1)) return false;
+		if (nEff > 4) { pOut->clear(); return false; }
+		uint32_t q = o + kSurfEffects + 1;
+		for (uint8_t e = 0; e < nEff; ++e)
+		{
+			uint16_t nLen = 0;
+			if (!RdU16(b, n, q, &nLen)) return false;
+			if (q + 2 + nLen > n) return false;
+			const char* pName = (const char*)(b + q + 2);
+			const bool bMirror = (nLen == 6 && _strnicmp(pName, "mirror", 6) == 0);
+			q += 2 + nLen;
+			if (!RdU16(b, n, q, &nLen)) return false;
+			if (q + 2 + nLen > n) return false;
+			q += 2 + nLen;
+			if (bMirror) s.bMirror = true;
+		}
+		if (!RdU16(b, n, q, &s.nFlags)) return false;
+		q += 2;
+		if (!Rd(b, n, m.nPlaneAt + s.nPlane * kPlaneSize, s.fPlane, 16)) return false;
 		pOut->push_back(s);
+		o = q;
 	}
 	return true;
 }

@@ -47,3 +47,6 @@ shots/
 # Release archives and the assembled public tree (built by tools/make-release.ps1
 # and tools/make-public-tree.ps1 - never sources, always regenerated).
 dist/
+
+# written by the host at startup for the launcher (the headset's recommended eye size)
+headset-eye.txt

@@ -50,6 +50,12 @@ $ErrorActionPreference = 'Stop'
 $Root   = Split-Path $PSScriptRoot -Parent
 $Game   = Join-Path $Root 'game'
 $OutAbs = Join-Path $Root $Out
+# NEVER KILL A GAME THIS SCRIPT DID NOT START. A running lithtech.exe is most
+# likely a player's session; stop and say so instead of closing it.
+if (Get-Process lithtech -ErrorAction SilentlyContinue) {
+    Write-Host '  STOPPED: the game is already running (a player may be in it). Close it first; nothing was touched.' -ForegroundColor Red
+    exit 1
+}
 
 Write-Host ''
 Write-Host '  OURS - d3dstub.ren, the renderer we wrote. Flat and mono.' -ForegroundColor Cyan
@@ -101,12 +107,23 @@ $runner = Start-Process -FilePath 'powershell' -PassThru -ArgumentList @(
     '-Set', ($set -join ',')
 )
 
+# THE GAME THIS SCRIPT STARTED is run.ps1's child, found by parent pid and
+# never by name: any other lithtech.exe may be a player's.
+function Get-OwnGame($runner) {
+    $c = Get-CimInstance Win32_Process -Filter "ParentProcessId=$($runner.Id) AND Name='lithtech.exe'" -ErrorAction SilentlyContinue |
+         Select-Object -First 1
+    if ($c) { try { return Get-Process -Id $c.ProcessId -ErrorAction Stop } catch {} }
+    return $null
+}
+
 Write-Host '  starting...' -ForegroundColor DarkGray
 $deadline = (Get-Date).AddSeconds(40)
-while (-not (Get-Process lithtech -ErrorAction SilentlyContinue) -and (Get-Date) -lt $deadline) {
+$g = $null
+while (-not $g -and (Get-Date) -lt $deadline) {
     Start-Sleep -Milliseconds 500
+    $g = Get-OwnGame $runner
 }
-if (-not (Get-Process lithtech -ErrorAction SilentlyContinue)) {
+if (-not $g) {
     throw 'the game did not start within 40 s - see the console window it opened.'
 }
 Start-Sleep -Seconds 4
@@ -124,12 +141,12 @@ New-Item -ItemType Directory -Force $OutAbs | Out-Null
 $burst = 0
 $dirs  = @()
 while ($true) {
-    if (-not (Get-Process lithtech -ErrorAction SilentlyContinue)) {
+    if ($g.HasExited) {
         Write-Host '  the game closed.' -ForegroundColor Yellow; break
     }
     $k = Read-Host 'ENTER to capture, Q to finish'
     if ($k -match '^\s*[qQ]') { break }
-    if (-not (Get-Process lithtech -ErrorAction SilentlyContinue)) {
+    if ($g.HasExited) {
         Write-Host '  the game closed.' -ForegroundColor Yellow; break
     }
     $burst++
@@ -140,11 +157,10 @@ while ($true) {
     $dirs += $d
 }
 
-Get-Process lithtech -ErrorAction SilentlyContinue | ForEach-Object {
-    try { $_.CloseMainWindow() | Out-Null } catch {}
-}
+# Only the process this script started.
+if (-not $g.HasExited) { try { $g.CloseMainWindow() | Out-Null } catch {} }
 Start-Sleep -Seconds 2
-Get-Process lithtech -ErrorAction SilentlyContinue | ForEach-Object { try { $_.Kill() } catch {} }
+if (-not $g.HasExited) { try { $g.Kill() } catch {} }
 if ($runner -and -not $runner.HasExited) { try { $runner.Kill() } catch {} }
 
 # ---- read it back -------------------------------------------------------

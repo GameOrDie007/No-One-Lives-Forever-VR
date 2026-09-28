@@ -139,6 +139,18 @@ public:
 	XrFovf		EyeFov(int nEye) const { return m_Views[nEye].fov; }
 	float		Ipd() const;
 
+	// What was last SUBMITTED for an eye: the declared frustum, the orientation
+	// the picture was drawn from, and the part of the image the declaration
+	// covers, as fractions. The desktop spectator view projects through this.
+	struct DeclaredView
+	{
+		XrFovf			fov{};
+		XrQuaternionf	q{ 0.0f, 0.0f, 0.0f, 1.0f };
+		float			rx = 0.0f, ry = 0.0f, rw = 1.0f, rh = 1.0f;
+		bool			bValid = false;
+	};
+	const DeclaredView&	Declared(int nEye) const { return m_Decl[nEye & 1]; }
+
 	int		RecommendedWidth()  const { return m_nRecommendedW; }
 	int		RecommendedHeight() const { return m_nRecommendedH; }
 
@@ -434,6 +446,7 @@ private:
 
 	int				m_nWidth  = 0;
 	int				m_nHeight = 0;
+	DeclaredView	m_Decl[2];
 	int				m_nRecommendedW = 0;
 	int				m_nRecommendedH = 0;
 };

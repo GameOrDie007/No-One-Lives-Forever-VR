@@ -30,11 +30,28 @@
 
 #include "render3d.h"		// R3D_LogFn
 
+// THE SURFACE RECORD IS VARIABLE LENGTH. 50 fixed bytes, then a u8 count of
+// effect strings, then per effect a u16 length + name and a u16 length +
+// parameter, then the u16 surface TYPE. The count is 0 on almost every
+// surface, which is where the "53-byte record" came from - and a model with a
+// single "Pan" face (eight VisBSPs, among them M08S05's) shifted every record
+// after it, which is why those models never located.
+//
+// The effect is the brush's Effect / EffectParam property: "Pan 4 8" scrolls
+// the texture, "mirror overlay" makes the face a MIRROR. There is no mirror
+// flag bit anywhere else - the engine flags at +42 carry SOLID, INVISIBLE,
+// SKY, LIGHTMAP, PORTAL (the vis portals doors toggle) and the rest.
 struct WorldSurface
 {
 	uint16_t nTexture;		// index into the model's own texture list
 	uint32_t nPlane;
-	uint16_t nFlags;		// 202 == a marker: AI.dtx or Invisible.dtx
+	// THE SURFACE TYPE (SurfaceDefs.h): 202 is ST_INVISIBLE - AI.dtx and
+	// Invisible.dtx - and 110 is ST_SKY. It is the footstep / impact type,
+	// not a render flag; it was called "flags" before the record was decoded.
+	uint16_t nFlags;
+	uint32_t nEngFlags;		// the u32 at +42: SURF_ bits (0x80 lightmapped, 0x04 invisible)
+	bool     bMirror;		// effect "mirror": the face reflects the room
+	float    fPlane[4];		// the plane it names: normal, distance (n.p = d)
 };
 
 struct WorldModelFile

@@ -22,7 +22,7 @@
 param([string[]]$Set = @(), [string]$RezName = 'Modernizer.rez',
       [string]$RenderDll = 'd3d.ren',
       [int]$Width = 3840, [int]$Height = 2076,
-      [string]$Title = 'NOLF VR')
+      [string]$Title = 'No One Lives Forever VR')
 
 $ErrorActionPreference = 'Stop'
 

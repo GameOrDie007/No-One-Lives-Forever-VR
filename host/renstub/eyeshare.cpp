@@ -171,6 +171,23 @@ bool ES_Create(ID3D11Device* pDev, ID3D11DeviceContext* pCtx,
 void ES_PublishOverlay(ID3D11Texture2D* pTex)
 {
 	if (!g_pOvl || !g_pOvlMutex || !g_pCtx || !pTex) return;
+	// A copy between two sizes is silently nothing: say so once, loudly.
+	{
+		D3D11_TEXTURE2D_DESC sd{};
+		pTex->GetDesc(&sd);
+		if (sd.Width != g_nOvlW || sd.Height != g_nOvlH)
+		{
+			static bool s_bSaid = false;
+			if (!s_bSaid && Log)
+			{
+				s_bSaid = true;
+				Log("  ES: PAUSE OVERLAY NOT PUBLISHED - drawn %ux%u, shared %ux%u; the headset would show an empty panel",
+					sd.Width, sd.Height, g_nOvlW, g_nOvlH);
+			}
+			++g_nOvlDropped;
+			return;
+		}
+	}
 	if (g_pOvlMutex->AcquireSync(kKey, 0) != S_OK) { ++g_nOvlDropped; return; }
 	g_pCtx->CopyResource(g_pOvl, pTex);
 	++g_nOvlSerial;

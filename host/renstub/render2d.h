@@ -28,7 +28,9 @@ void R2D_Destroy();
 
 // The render target's pixel size, which is the coordinate space the engine's
 // destination rectangles are expressed in.
-void R2D_SetTarget(ID3D11RenderTargetView* pRTV, int nW, int nH);
+// The back buffer is nPixW x nPixH pixels; the engine addresses it as
+// nCoordW x nCoordH (its mode). Equal unless +StubRenderScale100 is set.
+void R2D_SetTarget(ID3D11RenderTargetView* pRTV, int nPixW, int nPixH, int nCoordW, int nCoordH);
 
 // Draw one surface. pKey identifies the surface for the texture cache; it is
 // the engine-visible surface handle and is never dereferenced here.

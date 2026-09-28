@@ -28,7 +28,7 @@ if (-not (Test-Path $vcvars)) { throw 'No 32-bit VC environment found.' }
 
 # The version resource (see host\res\version.h), linked in with the sources.
 . (Join-Path $PSScriptRoot 'version-res.ps1')
-$ver = New-VersionResCommand -ObjDir $Obj -FileName 'd3dstub.ren' -Description 'NOLF1 VR - Direct3D 11 renderer' -Type dll
+$ver = New-VersionResCommand -ObjDir $Obj -FileName 'd3dstub.ren' -Description 'No One Lives Forever VR - Direct3D 11 renderer' -Type dll
 
 $cl = @(
     '/nologo', '/std:c++17', '/EHsc', '/O2', '/W3', '/MT',

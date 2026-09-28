@@ -33,6 +33,12 @@ param(
 $ErrorActionPreference = 'Stop'
 $Root = Split-Path $PSScriptRoot -Parent
 $Game = Join-Path $Root 'game'
+# NEVER KILL A GAME THIS SCRIPT DID NOT START. A running lithtech.exe is most
+# likely a player's session; stop and say so instead of closing it.
+if (Get-Process lithtech -ErrorAction SilentlyContinue) {
+    Write-Host '  STOPPED: the game is already running (a player may be in it). Close it first; nothing was touched.' -ForegroundColor Red
+    exit 1
+}
 $OutDir = Join-Path $Root $Out
 New-Item -ItemType Directory -Force $OutDir | Out-Null
 
@@ -43,17 +49,19 @@ using System.Runtime.InteropServices;
 public class Fg {
   [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
   [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int n);
+  [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
 }
 '@
 
-Get-Process lithtech -ErrorAction SilentlyContinue | ForEach-Object { try { $_.Kill() } catch {} }
-Get-Process python   -ErrorAction SilentlyContinue | ForEach-Object { try { $_.Kill() } catch {} }
+# Only a leftover fake host, never every python on the machine.
+Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -match 'fakehost' } |
+    ForEach-Object { try { Stop-Process -Id $_.ProcessId -Force } catch {} }
 Start-Sleep -Milliseconds 800
 
 $fakeLog = Join-Path $Root 'logs\fakehost-click.log'
 New-Item -ItemType Directory -Force (Split-Path $fakeLog) | Out-Null
 $fake = Start-Process -FilePath 'python' `
-        -ArgumentList @((Join-Path $PSScriptRoot 'fakehost.py'), '--static', '0,0,0') `
+        -ArgumentList @(('"' + (Join-Path $PSScriptRoot 'fakehost.py') + '"'), '--static', '0,0,0') `
         -PassThru -WindowStyle Minimized -RedirectStandardOutput $fakeLog
 Start-Sleep -Seconds 2
 if ($fake.HasExited) { throw "fake host exited (exit $($fake.ExitCode))" }
@@ -93,6 +101,12 @@ if (-not $p.HasExited) {
     }
     for ($k = 0; $k -lt $Keys.Count; $k++) {
         if ($p.HasExited) { $died = $true; Write-Host "  DIED before step $($k+1)" -ForegroundColor Red; break }
+        # EVERY key, not just the first: focus can move mid-sequence (a click,
+        # a notification), and a key sent then lands in someone else's window.
+        if ([Fg]::GetForegroundWindow() -ne $p.MainWindowHandle) {
+            Write-Host ("  STOPPED before step {0}: the game is not in front; the rest NOT sent" -f ($k+1)) -ForegroundColor Red
+            break
+        }
         Write-Host ("  sending step {0}/{1}: {2}" -f ($k+1), $Keys.Count, $Keys[$k]) -ForegroundColor Cyan
         [System.Windows.Forms.SendKeys]::SendWait($Keys[$k])
         if ($k -lt $Keys.Count - 1) {
@@ -110,7 +124,8 @@ if (-not $p.HasExited) {
 }
 
 if (-not $p.HasExited) { try { $p.CloseMainWindow() | Out-Null } catch {} ; Start-Sleep -Seconds 2 }
-Get-Process lithtech -ErrorAction SilentlyContinue | ForEach-Object { try { $_.Kill() } catch {} }
+# Only the process this script started.
+if (-not $p.HasExited) { try { $p.Kill() } catch {} }
 if ($fake -and -not $fake.HasExited) { try { $fake.Kill() } catch {} }
 Start-Sleep -Milliseconds 500
 

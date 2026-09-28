@@ -253,7 +253,7 @@ bool XrVr::CreateInstance()
 							XR_FB_DISPLAY_REFRESH_RATE_EXTENSION_NAME };
 
 	XrInstanceCreateInfo ici{ XR_TYPE_INSTANCE_CREATE_INFO };
-	strcpy_s(ici.applicationInfo.applicationName, "NOLF1 VR");
+	strcpy_s(ici.applicationInfo.applicationName, "No One Lives Forever VR");
 	ici.applicationInfo.apiVersion = XR_API_VERSION_1_0;
 	ici.enabledExtensionCount = m_bHaveRefreshExt ? 2 : 1;
 	ici.enabledExtensionNames = exts;
@@ -292,14 +292,24 @@ bool XrVr::CreateInstance()
 		if (i > 0 && (i % 20) == 0) Msg("still waiting for a headset (%d s)", i / 2);
 		if (i == 0)
 		{
-			Msg("no headset yet - waiting up to 60s.");
+			Msg("no headset yet on %s - waiting up to 60s.", ip.runtimeName);
+			// NAME THE RUNTIME IT IS WAITING ON. With a Steam Frame on and
+			// SteamVR running, the system's runtime was still Virtual Desktop,
+			// which waited for a Quest that was not there; the notice said only
+			// "waiting for your VR headset" and read as "no headset detected".
+			static wchar_t s_wNotice[640];
+			_snwprintf(s_wNotice, 639,
+				L"Waiting for your VR headset through %S.\n\n"
+				L"Put the headset on and start streaming (Virtual Desktop), or start "
+				L"SteamVR or Oculus Link. The game appears in the headset as soon as "
+				L"it connects - this message closes by itself.\n\n"
+				L"Using a SteamVR headset (Steam Frame, Index, Vive) and this does not "
+				L"say SteamVR? Close the game, start SteamVR first, then start the game.",
+				ip.runtimeName);
+			s_wNotice[639] = L'\0';
 			hNotice = CreateThread(nullptr, 0, [](LPVOID) -> DWORD {
-				MessageBoxW(nullptr,
-					L"Waiting for your VR headset.\n\n"
-					L"Put the headset on and start streaming (Virtual Desktop), or start "
-					L"SteamVR or Oculus Link. The game appears in the headset as soon as "
-					L"it connects - this message closes by itself.",
-					L"NOLF VR - waiting for the headset",
+				MessageBoxW(nullptr, s_wNotice,
+					L"No One Lives Forever VR - waiting for the headset",
 					MB_OK | MB_ICONINFORMATION | MB_TOPMOST | MB_SETFOREGROUND);
 				return 0; }, nullptr, 0, nullptr);
 		}
@@ -308,7 +318,7 @@ bool XrVr::CreateInstance()
 		// taking the foreground costs nothing.
 		if (hNotice && (i % 4) == 1)
 		{
-			HWND hBox = FindWindowW(L"#32770", L"NOLF VR - waiting for the headset");
+			HWND hBox = FindWindowW(L"#32770", L"No One Lives Forever VR - waiting for the headset");
 			if (hBox)
 			{
 				SetWindowPos(hBox, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
@@ -322,7 +332,7 @@ bool XrVr::CreateInstance()
 		// Close the notice whichever way this went.
 		for (int k = 0; k < 20; ++k)
 		{
-			HWND hBox = FindWindowW(L"#32770", L"NOLF VR - waiting for the headset");
+			HWND hBox = FindWindowW(L"#32770", L"No One Lives Forever VR - waiting for the headset");
 			if (!hBox) break;
 			PostMessageW(hBox, WM_CLOSE, 0, 0);
 			Sleep(50);
@@ -344,6 +354,20 @@ bool XrVr::CreateInstance()
 	m_nRecommendedW = (int)vcv[0].recommendedImageRectWidth;
 	m_nRecommendedH = (int)vcv[0].recommendedImageRectHeight;
 	Msg("runtime recommends %dx%d per eye", m_nRecommendedW, m_nRecommendedH);
+
+	// TELL THE LAUNCHER, so the game can be started at the headset's own
+	// resolution. The engine's mode is fixed at launch and the eyes are half of
+	// it, so the launcher has to know the size BEFORE it starts the game - and
+	// this log is locked while the host runs. One line, "W H", in the working
+	// directory (the release root); play-vr.ps1 deletes it before starting us.
+	{
+		FILE* f = nullptr;
+		if (fopen_s(&f, "headset-eye.txt", "w") == 0 && f)
+		{
+			fprintf(f, "%d %d\n", m_nRecommendedW, m_nRecommendedH);
+			fclose(f);
+		}
+	}
 
 	PFN_xrGetD3D11GraphicsRequirementsKHR pfn = nullptr;
 	xrGetInstanceProcAddr(m_Instance, "xrGetD3D11GraphicsRequirementsKHR", (PFN_xrVoidFunction*)&pfn);
@@ -408,8 +432,16 @@ bool XrVr::CreateSwapchains(int nWidth, int nHeight)
 	// asked for lets us do it with Catmull-Rom instead. Same source pixels,
 	// better reconstruction - which is the difference the player saw between
 	// low resolutions looking unsmoothed and 4K looking markedly smoother.
-	if (m_bUpscale && m_nRecommendedW > 0 && m_nRecommendedH > 0 &&
-		(m_nRecommendedW > nWidth || m_nRecommendedH > nHeight))
+	// ONLY WHEN IT IS WORTH IT. With the world rendered at the headset's own
+	// size (the launcher's StubRenderScale100) the eye comes out within a few
+	// percent of the request - 3014x3259 against 3072x3264 - and any shortfall
+	// at all used to switch the enlargement on, running the filter over the
+	// full headset size for a 2% gain: the most expensive thing the host does,
+	// at its largest. Under 10% short, the frame is submitted as it is and the
+	// runtime's own filter covers the difference.
+	const bool bFarShort = m_nRecommendedW > 0 && m_nRecommendedH > 0 &&
+		(nWidth * 10 < m_nRecommendedW * 9 || nHeight * 10 < m_nRecommendedH * 9);
+	if (m_bUpscale && bFarShort)
 	{
 		// Capped at 1.5x the source, not the runtime's full request.
 		//
@@ -1116,6 +1148,10 @@ void XrVr::EndFrame(bool bHaveImage, bool bMenu, bool bPauseQuad)
 {
 	if (!m_bRunning) return;
 
+	// Set again below only when this frame is the world in the eyes; a menu
+	// quad or a frame with no image leaves the spectator on the plain view.
+	m_Decl[0].bValid = m_Decl[1].bValid = false;
+
 	// --- menus: a world-locked quad, not a projection layer ----------------
 	// Drawn into the eyes, a menu is welded to the head and drags with every
 	// movement. A quad sits in space and the head moves around it.
@@ -1387,6 +1423,21 @@ void XrVr::EndFrame(bool bHaveImage, bool bMenu, bool bPauseQuad)
 			views[eye].subImage.imageRect.offset = { ix, iy };
 			views[eye].subImage.imageRect.extent = { iw, ih };
 			views[eye].subImage.imageArrayIndex = 0;
+
+			// WHAT THIS EYE'S PICTURE IS, for the desktop spectator view: the
+			// frustum declared for it, the orientation it was drawn from, and
+			// the part of the image the declaration covers (fractions, so they
+			// hold for the renderer's frame as well as this swapchain).
+			if (m_nWidth > 0 && m_nHeight > 0)
+			{
+				m_Decl[eye].fov = views[eye].fov;
+				m_Decl[eye].q   = views[eye].pose.orientation;
+				m_Decl[eye].rx  = (float)ix / (float)m_nWidth;
+				m_Decl[eye].ry  = (float)iy / (float)m_nHeight;
+				m_Decl[eye].rw  = (float)iw / (float)m_nWidth;
+				m_Decl[eye].rh  = (float)ih / (float)m_nHeight;
+				m_Decl[eye].bValid = !bHeadLock;
+			}
 
 			if (!m_bLoggedSubRect)
 			{

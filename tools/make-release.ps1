@@ -28,7 +28,9 @@ $Root = Split-Path $PSScriptRoot -Parent
 $Game = Join-Path $Root 'game'
 
 if (-not $Version) { $Version = (Get-Date -Format 'yyyy-MM-dd') }
-$Name = "No-One-Lives-Forever-VR-$Version"
+# The platform goes on the FILE (one repo per game, every platform inside it):
+# No-One-Lives-Forever-VR-1.1-PCVR.zip, and later a Quest build beside it.
+$Name = "No-One-Lives-Forever-VR-$Version-PCVR"
 
 # A HALF-FINISHED INSTALL IS WORSE THAN A STALE ONE. The build writes into
 # game\, and a running game holds a lock on part of it.
@@ -65,6 +67,30 @@ if (Test-Path -LiteralPath $vrdt) {
                    "rebuild, or pass -AllowDebugTools for a tester-only build. Nothing was written.")
         }
     }
+}
+
+# ---- NO DASHES IN THE PUBLIC RELEASE TEXT --------------------------------
+#
+# The player's rule (27 Sep 2026): no em dash, no en dash, and no " - " or
+# " -- " standing in for one, in release notes or the Discord post - it reads
+# as machine-written and people stop reading. The first line keeps its own
+# format ("... v1.1 - Bits & Bobs"). Checked here so it cannot ship by
+# accident: docs\release-<version>-notes.md and -discord.md, when present.
+foreach ($kind in @('notes', 'discord')) {
+    $txt = Join-Path $Root ("docs\release-{0}-{1}.md" -f $Version, $kind)
+    if (-not (Test-Path -LiteralPath $txt)) { continue }
+    $dashLines = @()
+    $n = 0
+    foreach ($line in [IO.File]::ReadAllLines($txt, [Text.Encoding]::UTF8)) {
+        $n++
+        if ($n -eq 1) { continue }
+        if ($line.IndexOf([char]0x2014) -ge 0 -or $line.IndexOf([char]0x2013) -ge 0 -or
+            $line -match '\S -{1,2} \S') { $dashLines += ("  line {0}: {1}" -f $n, $line.Trim()) }
+    }
+    if ($dashLines.Count) {
+        throw ("REFUSING TO PACKAGE: dashes in {0} (rewrite the sentence - a comma, colon or full stop):`n{1}" -f $txt, ($dashLines -join "`n"))
+    }
+    Write-Host ("public text checked, no dashes: {0}" -f (Split-Path $txt -Leaf)) -ForegroundColor Green
 }
 
 if (-not $SkipBuild) {
@@ -138,7 +164,7 @@ if ($missing.Count) {
     throw ("not built yet: " + ($missing -join ', ') + " - nothing was packaged.")
 }
 Set-Content -LiteralPath (Join-Path $Stage 'Setup.bat') -Value $SetupBat -Encoding ASCII
-Set-Content -LiteralPath (Join-Path $Stage 'Play NOLF VR.bat') -Value $PlayBat -Encoding ASCII
+Set-Content -LiteralPath (Join-Path $Stage 'Play No One Lives Forever VR.bat') -Value $PlayBat -Encoding ASCII
 Set-Content -LiteralPath (Join-Path $Stage 'Collect report.bat') -Value $ReportBat -Encoding ASCII
 Set-Content -LiteralPath (Join-Path $Stage 'version.txt') -Value ("No One Lives Forever VR " + $Version) -Encoding ASCII
 

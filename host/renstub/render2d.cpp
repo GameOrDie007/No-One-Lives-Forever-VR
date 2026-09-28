@@ -121,7 +121,8 @@ namespace
 	int                     g_bColour2D    = 1;
 
 	ID3D11RenderTargetView* g_pRTV = nullptr;
-	int                     g_nTargetW = 0, g_nTargetH = 0;
+	int                     g_nTargetW = 0, g_nTargetH = 0;	// engine coordinates
+	int                     g_nPixW = 0, g_nPixH = 0;			// the target's pixels
 
 	long g_nUploads = 0, g_nDraws = 0, g_nFailed = 0;
 	// Re-upload every surface on every blit, ignoring the dirty flag.
@@ -761,9 +762,13 @@ void R2D_Destroy()
 	g_pDev = nullptr; g_pCtx = nullptr;
 }
 
-void R2D_SetTarget(ID3D11RenderTargetView* pRTV, int nW, int nH)
+void R2D_SetTarget(ID3D11RenderTargetView* pRTV, int nPixW, int nPixH, int nCoordW, int nCoordH)
 {
-	g_pRTV = pRTV; g_nTargetW = nW; g_nTargetH = nH;
+	// g_nTarget is the COORDINATE space every blit rectangle is in, and all the
+	// layout arithmetic below divides by it; only the viewports and the eye
+	// copy's region are in pixels (g_nPix). At 1:1 the two are the same.
+	g_pRTV = pRTV; g_nTargetW = nCoordW; g_nTargetH = nCoordH;
+	g_nPixW = nPixW; g_nPixH = nPixH;
 }
 
 void R2D_Invalidate(const void* pKey)
@@ -783,6 +788,20 @@ bool R2D_Snapshot(const void* pKey, int sx, int sy, int nW, int nH)
 {
 	if (!g_pCtx || !g_pDev || !g_pRTV || nW <= 0 || nH <= 0) return false;
 	if (sx < 0 || sy < 0 || sx + nW > g_nTargetW || sy + nH > g_nTargetH) return false;
+	// THE REGION IN PIXELS. The rectangle is the engine's; the copy is of the
+	// target's pixels, all of them - this is the eye image moving across the
+	// frame, and copying it at coordinate size would throw away exactly the
+	// resolution the scale was for. It is drawn back through a normalised UV,
+	// so a texture bigger than the surface it stands in for is fine.
+	if (g_nPixW > 0 && g_nPixH > 0 && (g_nPixW != g_nTargetW || g_nPixH != g_nTargetH))
+	{
+		const int px0 = (int)((long long)sx * g_nPixW / g_nTargetW);
+		const int py0 = (int)((long long)sy * g_nPixH / g_nTargetH);
+		const int px1 = (int)((long long)(sx + nW) * g_nPixW / g_nTargetW);
+		const int py1 = (int)((long long)(sy + nH) * g_nPixH / g_nTargetH);
+		sx = px0; sy = py0; nW = px1 - px0; nH = py1 - py0;
+		if (nW <= 0 || nH <= 0) return false;
+	}
 	TexEntry* e = Find(pKey);
 	if (!e)
 	{
@@ -926,7 +945,11 @@ void R2D_Stats(int* pnTextures, long* pnUploads, long* pnDraws, long* pnFailed)
 // subtly different from the mono one.
 static bool EnsureOverlay()
 {
-	const int nW = g_nTargetW / 2, nH = g_nTargetH;
+	// In PIXELS, one eye of the back buffer: the host's shared overlay is made
+	// that size, and a CopyResource between two sizes does nothing at all. At
+	// coordinate size (1920x2076 under a 3014x3259 eye) every pause menu was
+	// an empty panel. The quad is drawn in NDC, so any size lays out the same.
+	const int nW = (g_nPixW ? g_nPixW : g_nTargetW) / 2, nH = g_nPixH ? g_nPixH : g_nTargetH;
 	if (nW <= 0 || nH <= 0 || !g_pDev) return false;
 	if (g_pOvlTex && g_nOvlW == nW && g_nOvlH == nH) return true;
 	if (g_pOvlRTV) { g_pOvlRTV->Release(); g_pOvlRTV = nullptr; }
@@ -1135,7 +1158,10 @@ void R2D_Blit(const void* pKey,
 	const float u0 = (float)sx0 / nSrcW, u1 = (float)sx1 / nSrcW;
 	const float v0 = (float)sy0 / nSrcH, v1 = (float)sy1 / nSrcH;
 
-	const D3D11_VIEWPORT vp = { 0.0f, 0.0f, (float)g_nTargetW, (float)g_nTargetH, 0.0f, 1.0f };
+	// In PIXELS: the NDC above came from engine coordinates, the viewport maps
+	// it onto however many pixels the target really has.
+	const D3D11_VIEWPORT vp = { 0.0f, 0.0f, (float)(g_nPixW ? g_nPixW : g_nTargetW),
+								(float)(g_nPixH ? g_nPixH : g_nTargetH), 0.0f, 1.0f };
 	DrawQuad(e, vp, x0, y0, x1, y1, u0, v0, u1, v1, fAlpha);
 }
 
@@ -1411,10 +1437,14 @@ void R2D_BlitStereo(const void* pKey,
 		}
 	}
 
+	// The eye's viewport in PIXELS; nEyeW above stays in coordinates, for the
+	// layout arithmetic that divides by it.
+	const int nEyePixW = (g_nPixW ? g_nPixW : g_nTargetW) / 2;
+	const int nPixH    =  g_nPixH ? g_nPixH : g_nTargetH;
 	for (int nEye = 0; nEye < 2; ++nEye)
 	{
-		const D3D11_VIEWPORT vp = { (float)(nEye * nEyeW), 0.0f,
-									(float)nEyeW, (float)g_nTargetH, 0.0f, 1.0f };
+		const D3D11_VIEWPORT vp = { (float)(nEye * nEyePixW), 0.0f,
+									(float)nEyePixW, (float)nPixH, 0.0f, 1.0f };
 		// A COVER blit means it: a fade or a tint is a tiny surface stretched
 		// over the whole screen to hide everything behind it, and hiding 76%
 		// of the eye is not a fade, it is a rectangle. Those fill the eye

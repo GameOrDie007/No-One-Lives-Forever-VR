@@ -28,7 +28,7 @@ if (-not (Test-Path $vcvars)) { throw 'vcvarsall.bat not found.' }
 # game would fall back to the system DINPUT without saying so.
 # The version resource (see host\res\version.h), linked in with the source.
 . (Join-Path $PSScriptRoot 'version-res.ps1')
-$ver = New-VersionResCommand -ObjDir $Obj -FileName 'DINPUT.dll' -Description 'NOLF1 VR - DirectInput wrapper (keyboard input while the headset software has focus)' -Type dll
+$ver = New-VersionResCommand -ObjDir $Obj -FileName 'DINPUT.dll' -Description 'No One Lives Forever VR - DirectInput wrapper (keyboard input while the headset software has focus)' -Type dll
 
 $cl = @(
     '/nologo', '/O2', '/EHsc', '/W3', '/MT', '/LD',

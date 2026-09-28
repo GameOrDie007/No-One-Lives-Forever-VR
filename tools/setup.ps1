@@ -354,7 +354,7 @@ Line ""
 Ok "Done."
 Line ""
 Line "  To play: put your headset on, start Virtual Desktop / SteamVR / Oculus Link,"
-Line "  then double-click  Play NOLF VR.bat"
+Line "  then double-click  Play No One Lives Forever VR.bat"
 Line ""
 exit 0
 

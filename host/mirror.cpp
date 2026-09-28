@@ -43,6 +43,40 @@ float4 PSMain(VSOut i) : SV_TARGET
 }
 )";
 
+	// The spectator view: the output rectangle maps onto a ROTATED rectangle of
+	// the eye - centre gC, full right edge gR, full down edge gD, all in eye
+	// texels - so one draw both follows the smoothed head and levels the
+	// horizon. The vertex shader is the overlay's.
+	const char* kSpecHLSL = R"(
+cbuffer Spec : register(b0) { float4 gC; float4 gR; float4 gD; };
+Texture2D    gTex : register(t0);
+SamplerState gSmp : register(s0);
+struct VSOut { float4 pos : SV_POSITION; float2 uv : TEXCOORD0; };
+float4 PSMain(VSOut i) : SV_TARGET
+{
+    uint2 dim;
+    gTex.GetDimensions(dim.x, dim.y);
+    float2 p = gC.xy + (i.uv.x - 0.5) * gR.xy + (i.uv.y - 0.5) * gD.xy;
+    return float4(gTex.SampleLevel(gSmp, p / float2(dim), 0).rgb, 1.0);
+}
+)";
+
+	// Quaternion (x,y,z,w) applied to a vector, and its conjugate.
+	void QRot(const float q[4], const float v[3], float o[3])
+	{
+		const float tx = 2.0f * (q[1] * v[2] - q[2] * v[1]);
+		const float ty = 2.0f * (q[2] * v[0] - q[0] * v[2]);
+		const float tz = 2.0f * (q[0] * v[1] - q[1] * v[0]);
+		o[0] = v[0] + q[3] * tx + (q[1] * tz - q[2] * ty);
+		o[1] = v[1] + q[3] * ty + (q[2] * tx - q[0] * tz);
+		o[2] = v[2] + q[3] * tz + (q[0] * ty - q[1] * tx);
+	}
+	void QRotInv(const float q[4], const float v[3], float o[3])
+	{
+		const float c[4] = { -q[0], -q[1], -q[2], q[3] };
+		QRot(c, v, o);
+	}
+
 	// The game window the preview covers, so keys that land here go there.
 	// A preview with a do-nothing handler swallows every keystroke the
 	// moment it has focus - the console, chat, every bind (see the
@@ -164,7 +198,7 @@ bool MirrorWindow::Create(ID3D11Device* pDevice, int nEyeW, int nEyeH, bool bRig
 	// TRANSPARENT as well as NOACTIVATE: without it the preview sits over the
 	// borderless game window and eats mouse clicks meant for the game's menus.
 	m_hWnd = CreateWindowExW(WS_EX_TOPMOST | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW | WS_EX_TRANSPARENT,
-		kClass, L"NOLF VR - right eye",
+		kClass, L"No One Lives Forever VR - right eye",
 		WS_POPUP, 40, 40,
 		rc.right - rc.left, rc.bottom - rc.top,
 		nullptr, nullptr, wc.hInstance, nullptr);
@@ -310,8 +344,16 @@ void MirrorWindow::Present(ID3D11DeviceContext* pCtx, ID3D11Texture2D* pSrc,
 	box.front  = 0;
 	box.back   = 1;
 
-	pCtx->CopySubresourceRegion(back.get(), 0,
-		(nDstX > 0) ? nDstX : 0, (nDstY > 0) ? nDstY : 0, 0, pSrc, 0, &box);
+	// THE SPECTATOR VIEW, when it is on and this is the world; otherwise (a
+	// menu, a pause, a failed draw) the plain copy, exactly as before.
+	const bool bSpecDrawn = m_bSpec && m_bSpecWorld && !m_Ovl && nDstX == 0 && nDstY == 0 &&
+		DrawSpectator(pCtx, back.get(), pSrc, nEyeX0, nEyeY0, nEyeW0, nEyeH0);
+	if (!bSpecDrawn)
+	{
+		if (m_bSpec) m_bSpecFwdValid = false;	// start from the head when it comes back
+		pCtx->CopySubresourceRegion(back.get(), 0,
+			(nDstX > 0) ? nDstX : 0, (nDstY > 0) ? nDstY : 0, 0, pSrc, 0, &box);
+	}
 
 	// THE PAUSE MENU, over the same crop of the eye (see SetPauseOverlay).
 	if (m_Ovl && nEyeW0 > 0 && nEyeH0 > 0)
@@ -521,45 +563,7 @@ bool MirrorWindow::DrawOverlay(ID3D11DeviceContext* pCtx, ID3D11Texture2D* pBack
 							   int nDstX, int nDstY, int nDstW, int nDstH)
 {
 	if (!m_pDevice || !pCtx || !pBack || !m_Ovl) return false;
-
-	// Made once, on the first pause. A failure is said once and the preview
-	// simply goes on without the menu, as it did before.
-	if (!m_bOvlTried)
-	{
-		m_bOvlTried = true;
-		com_ptr<ID3DBlob> vs, ps, err;
-		const size_t n = strlen(kOvlHLSL);
-		if (FAILED(D3DCompile(kOvlHLSL, n, nullptr, nullptr, nullptr, "VSMain", "vs_5_0", 0, 0, vs.put(), err.put()))
-			|| FAILED(D3DCompile(kOvlHLSL, n, nullptr, nullptr, nullptr, "PSMain", "ps_5_0", 0, 0, ps.put(), err.put()))
-			|| FAILED(m_pDevice->CreateVertexShader(vs->GetBufferPointer(), vs->GetBufferSize(), nullptr, m_pOvlVS.put()))
-			|| FAILED(m_pDevice->CreatePixelShader(ps->GetBufferPointer(), ps->GetBufferSize(), nullptr, m_pOvlPS.put())))
-		{
-			Msg("mirror: the pause-menu blend could not be built - the preview goes on without the menu");
-			m_pOvlVS = nullptr; m_pOvlPS = nullptr;
-			return false;
-		}
-		D3D11_SAMPLER_DESC sd{};
-		sd.Filter   = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
-		sd.AddressU = sd.AddressV = sd.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
-		sd.MaxLOD   = D3D11_FLOAT32_MAX;
-		m_pDevice->CreateSamplerState(&sd, m_pOvlSmp.put());
-		D3D11_BLEND_DESC bd{};
-		bd.RenderTarget[0].BlendEnable    = TRUE;
-		bd.RenderTarget[0].SrcBlend       = D3D11_BLEND_ONE;
-		bd.RenderTarget[0].DestBlend      = D3D11_BLEND_INV_SRC_ALPHA;
-		bd.RenderTarget[0].BlendOp        = D3D11_BLEND_OP_ADD;
-		bd.RenderTarget[0].SrcBlendAlpha  = D3D11_BLEND_ONE;
-		bd.RenderTarget[0].DestBlendAlpha = D3D11_BLEND_INV_SRC_ALPHA;
-		bd.RenderTarget[0].BlendOpAlpha   = D3D11_BLEND_OP_ADD;
-		bd.RenderTarget[0].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
-		m_pDevice->CreateBlendState(&bd, m_pOvlBlend.put());
-		D3D11_BUFFER_DESC cb{};
-		cb.ByteWidth = 16;
-		cb.Usage     = D3D11_USAGE_DYNAMIC;
-		cb.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
-		cb.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
-		m_pDevice->CreateBuffer(&cb, nullptr, m_pOvlCB.put());
-	}
+	EnsureShaders();
 	if (!m_pOvlVS || !m_pOvlPS || !m_pOvlSmp || !m_pOvlBlend || !m_pOvlCB)
 	{
 		if (!m_bOvlSaid)
@@ -617,6 +621,279 @@ bool MirrorWindow::DrawOverlay(ID3D11DeviceContext* pCtx, ID3D11Texture2D* pBack
 	{
 		m_bOvlSaid = true;
 		Msg("mirror: the pause menu is drawn over the preview (overlay rect %.0f,%.0f %.0fx%.0f)", fU, fV, fW, fH);
+	}
+	return true;
+}
+
+// Everything both preview draws need, made on first use: the full-viewport
+// triangle, the pause overlay's blend and the spectator view's crop. A part
+// that fails is said once and its draw falls back to what it did before.
+bool MirrorWindow::EnsureShaders()
+{
+	if (m_bOvlTried) return m_pOvlVS != nullptr;
+	m_bOvlTried = true;
+	if (!m_pDevice) return false;
+
+	com_ptr<ID3DBlob> vs, ps, sps, err;
+	const size_t n = strlen(kOvlHLSL);
+	if (FAILED(D3DCompile(kOvlHLSL, n, nullptr, nullptr, nullptr, "VSMain", "vs_5_0", 0, 0, vs.put(), err.put()))
+		|| FAILED(m_pDevice->CreateVertexShader(vs->GetBufferPointer(), vs->GetBufferSize(), nullptr, m_pOvlVS.put())))
+	{
+		Msg("mirror: the preview's shaders could not be built - plain preview, no pause menu on it");
+		m_pOvlVS = nullptr;
+		return false;
+	}
+	if (FAILED(D3DCompile(kOvlHLSL, n, nullptr, nullptr, nullptr, "PSMain", "ps_5_0", 0, 0, ps.put(), err.put()))
+		|| FAILED(m_pDevice->CreatePixelShader(ps->GetBufferPointer(), ps->GetBufferSize(), nullptr, m_pOvlPS.put())))
+	{
+		Msg("mirror: the pause-menu blend could not be built - the preview goes on without the menu");
+		m_pOvlPS = nullptr;
+	}
+	err = nullptr;
+	if (FAILED(D3DCompile(kSpecHLSL, strlen(kSpecHLSL), nullptr, nullptr, nullptr, "PSMain", "ps_5_0", 0, 0, sps.put(), err.put()))
+		|| FAILED(m_pDevice->CreatePixelShader(sps->GetBufferPointer(), sps->GetBufferSize(), nullptr, m_pSpecPS.put())))
+	{
+		Msg("mirror: the spectator view could not be built (%s) - plain preview",
+			err ? (const char*)err->GetBufferPointer() : "no compiler message");
+		m_pSpecPS = nullptr;
+	}
+
+	D3D11_SAMPLER_DESC sd{};
+	sd.Filter   = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
+	sd.AddressU = sd.AddressV = sd.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
+	sd.MaxLOD   = D3D11_FLOAT32_MAX;
+	m_pDevice->CreateSamplerState(&sd, m_pOvlSmp.put());
+
+	D3D11_BLEND_DESC bd{};
+	bd.RenderTarget[0].BlendEnable    = TRUE;
+	bd.RenderTarget[0].SrcBlend       = D3D11_BLEND_ONE;
+	bd.RenderTarget[0].DestBlend      = D3D11_BLEND_INV_SRC_ALPHA;
+	bd.RenderTarget[0].BlendOp        = D3D11_BLEND_OP_ADD;
+	bd.RenderTarget[0].SrcBlendAlpha  = D3D11_BLEND_ONE;
+	bd.RenderTarget[0].DestBlendAlpha = D3D11_BLEND_INV_SRC_ALPHA;
+	bd.RenderTarget[0].BlendOpAlpha   = D3D11_BLEND_OP_ADD;
+	bd.RenderTarget[0].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
+	m_pDevice->CreateBlendState(&bd, m_pOvlBlend.put());
+
+	D3D11_BUFFER_DESC cb{};
+	cb.ByteWidth = 16;
+	cb.Usage     = D3D11_USAGE_DYNAMIC;
+	cb.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+	cb.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+	m_pDevice->CreateBuffer(&cb, nullptr, m_pOvlCB.put());
+	cb.ByteWidth = 48;
+	m_pDevice->CreateBuffer(&cb, nullptr, m_pSpecCB.put());
+	return true;
+}
+
+void MirrorWindow::SetSpectatorView(const float q[4], float fTanL, float fTanR, float fTanU, float fTanD,
+									float fRx, float fRy, float fRw, float fRh, bool bWorld)
+{
+	for (int i = 0; i < 4; ++i) m_fSpecQ[i] = q[i];
+	m_fSpecTan[0] = fTanL; m_fSpecTan[1] = fTanR; m_fSpecTan[2] = fTanU; m_fSpecTan[3] = fTanD;
+	m_fSpecRect[0] = fRx; m_fSpecRect[1] = fRy; m_fSpecRect[2] = fRw; m_fSpecRect[3] = fRh;
+	// A frustum with no width, or a quaternion that is not one, is not a view.
+	const float qq = q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3];
+	m_bSpecWorld = bWorld && fTanR > fTanL && fTanU > fTanD && fRw > 0.0f && fRh > 0.0f &&
+				   qq > 0.9f && qq < 1.1f;
+	m_bSpecViewSet = true;
+}
+
+// THE SPECTATOR VIEW. Where the head points, smoothed; projected into this
+// eye's picture through the frustum it was declared with; a cut-out of the
+// eye around that point, turned so the world's up is the screen's up.
+//
+// Everything is in the eye image's own terms (the frustum's tangents and the
+// fraction of the picture it covers), so this reads nothing of the game and
+// is the same code for any port whose host declares a projection layer.
+bool MirrorWindow::DrawSpectator(ID3D11DeviceContext* pCtx, ID3D11Texture2D* pBack, ID3D11Texture2D* pSrc,
+								 int nEyeX, int nEyeY, int nEyeW, int nEyeH)
+{
+	if (!m_bSpecViewSet || nEyeW < 16 || nEyeH < 16 || m_nWidth < 16 || m_nHeight < 16) return false;
+	if (!EnsureShaders() || !m_pSpecPS || !m_pSpecCB || !m_pOvlSmp) return false;
+
+	float fCx, fCy, fRx, fRy, fDx, fDy, fW, fH;
+	if (!SpectatorCrop(nEyeX, nEyeY, nEyeW, nEyeH, fCx, fCy, fRx, fRy, fDx, fDy, fW, fH))
+		return false;
+
+	// The source's view, kept while the texture is the same one.
+	if (pSrc != m_pSpecSrcKey || !m_pSpecSRV)
+	{
+		m_pSpecSRV = nullptr;
+		m_pSpecSrcKey = pSrc;
+		const HRESULT hr = m_pDevice->CreateShaderResourceView(pSrc, nullptr, m_pSpecSRV.put());
+		if (FAILED(hr))
+		{
+			m_pSpecSRV = nullptr;
+			if (!m_bSpecFailSaid) { m_bSpecFailSaid = true; Msg("mirror: spectator view cannot read the eye (0x%08X) - plain preview", hr); }
+			return false;
+		}
+	}
+	com_ptr<ID3D11RenderTargetView> rtv;
+	if (FAILED(m_pDevice->CreateRenderTargetView(pBack, nullptr, rtv.put()))) return false;
+
+	D3D11_MAPPED_SUBRESOURCE ms{};
+	if (FAILED(pCtx->Map(m_pSpecCB.get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &ms))) return false;
+	float* p = (float*)ms.pData;
+	p[0] = fCx;       p[1] = fCy;       p[2]  = 0; p[3]  = 0;
+	p[4] = fRx * fW;  p[5] = fRy * fW;  p[6]  = 0; p[7]  = 0;
+	p[8] = fDx * fH;  p[9] = fDy * fH;  p[10] = 0; p[11] = 0;
+	pCtx->Unmap(m_pSpecCB.get(), 0);
+
+	const D3D11_VIEWPORT vp = { 0.0f, 0.0f, (float)m_nWidth, (float)m_nHeight, 0.0f, 1.0f };
+	ID3D11RenderTargetView* pRTV = rtv.get();
+	ID3D11ShaderResourceView* pSRV = m_pSpecSRV.get();
+	ID3D11SamplerState* pSmp = m_pOvlSmp.get();
+	ID3D11Buffer* pCB = m_pSpecCB.get();
+	const float kFactor[4] = { 0, 0, 0, 0 };
+	pCtx->OMSetRenderTargets(1, &pRTV, nullptr);
+	pCtx->OMSetBlendState(nullptr, kFactor, 0xFFFFFFFF);
+	pCtx->RSSetViewports(1, &vp);
+	pCtx->IASetInputLayout(nullptr);
+	pCtx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+	pCtx->VSSetShader(m_pOvlVS.get(), nullptr, 0);
+	pCtx->PSSetShader(m_pSpecPS.get(), nullptr, 0);
+	pCtx->PSSetShaderResources(0, 1, &pSRV);
+	pCtx->PSSetSamplers(0, 1, &pSmp);
+	pCtx->PSSetConstantBuffers(0, 1, &pCB);
+	pCtx->Draw(3, 0);
+
+	ID3D11ShaderResourceView* pNullSRV = nullptr;
+	ID3D11RenderTargetView* pNullRTV = nullptr;
+	pCtx->PSSetShaderResources(0, 1, &pNullSRV);
+	pCtx->OMSetRenderTargets(1, &pNullRTV, nullptr);
+
+	if (!m_bSpecSaid)
+	{
+		m_bSpecSaid = true;
+		Msg("mirror: spectator view on - a %.0fx%.0f cut-out of the %dx%d eye, following the head over %.2f s",
+			fW, fH, nEyeW, nEyeH, m_fSpecSmooth);
+	}
+	return true;
+}
+
+// The cut-out itself, apart from any drawing so a harness can check it.
+// Out: the centre, the unit right and down directions (eye pixels, y down)
+// and the width and height, all in the eye texture's pixels.
+bool MirrorWindow::SpectatorCrop(int nEyeX, int nEyeY, int nEyeW, int nEyeH,
+								 float& cx, float& cy, float& fRx, float& fRy,
+								 float& fDx, float& fDy, float& W, float& H)
+{
+	const float* q = m_fSpecQ;
+	const float kFwd[3] = { 0.0f, 0.0f, -1.0f };
+	float fHead[3];
+	QRot(q, kFwd, fHead);						// where the head points, world
+
+	// Follow it with a filter that adapts to speed (the "one-euro" filter):
+	// at rest it is heavy, so a wobble is not followed; turning it lightens,
+	// so a turn is not dragged behind. A plain time constant heavy enough to
+	// still a wobble lagged a 20 degree/s turn by 7 degrees, and the eye has
+	// little more room than that at the screen's shape - the cut-out hit the
+	// edge and the wobble came straight through. A jump of more than 45
+	// degrees (a recenter, a teleport, the first frame) is taken at once.
+	const double tNow = m_fSpecClockMs >= 0.0 ? m_fSpecClockMs : HostLog::NowMs();
+	const float dt = m_bSpecFwdValid ? (float)((tNow - m_fSpecLastMs) / 1000.0) : 0.0f;
+	m_fSpecLastMs = tNow;
+	const float fDot = m_fSpecFwd[0] * fHead[0] + m_fSpecFwd[1] * fHead[1] + m_fSpecFwd[2] * fHead[2];
+	if (!m_bSpecFwdValid || fDot < 0.7071f || dt > 0.5f || dt <= 0.0f)
+	{
+		for (int i = 0; i < 3; ++i) { m_fSpecFwd[i] = m_fSpecPrevHead[i] = fHead[i]; m_fSpecRate[i] = 0.0f; }
+		m_fSpecSpeed = 0.0f;
+		m_bSpecFwdValid = true;
+	}
+	else
+	{
+		// The head's turn rate as a VECTOR, smoothed (1 Hz), and only then its
+		// size. A wobble's rate swings both ways and averages out; its SIZE is
+		// always positive, and filtering that read a 2 degree, 6 Hz wobble as a
+		// steady 48 degree/s turn and opened the filter to it.
+		const float* p0 = m_fSpecPrevHead;
+		const float w[3] = { p0[1] * fHead[2] - p0[2] * fHead[1],
+							 p0[2] * fHead[0] - p0[0] * fHead[2],
+							 p0[0] * fHead[1] - p0[1] * fHead[0] };		// axis x sin(angle)
+		for (int i = 0; i < 3; ++i) m_fSpecPrevHead[i] = fHead[i];
+		const float kTwoPi = 6.2831853f;
+		const float aS = 1.0f / (1.0f + 1.0f / (kTwoPi * 1.0f * dt));
+		for (int i = 0; i < 3; ++i) m_fSpecRate[i] += (w[i] * 57.29578f / dt - m_fSpecRate[i]) * aS;
+		m_fSpecSpeed = sqrtf(m_fSpecRate[0] * m_fSpecRate[0] + m_fSpecRate[1] * m_fSpecRate[1] +
+							 m_fSpecRate[2] * m_fSpecRate[2]);			// degrees per second
+		// At rest: the time constant asked for. Every 10 degrees/s of turn
+		// adds 0.5 Hz, so a 60 degree/s turn is followed within ~0.05 s.
+		const float fMinHz = (m_fSpecSmooth > 0.001f) ? 1.0f / (kTwoPi * m_fSpecSmooth) : 1000.0f;
+		const float fHz = fMinHz + 0.05f * m_fSpecSpeed;
+		const float a = 1.0f / (1.0f + 1.0f / (kTwoPi * fHz * dt));
+		float l = 0.0f;
+		for (int i = 0; i < 3; ++i) { m_fSpecFwd[i] += (fHead[i] - m_fSpecFwd[i]) * a; l += m_fSpecFwd[i] * m_fSpecFwd[i]; }
+		l = sqrtf(l);
+		if (l < 1e-4f) { for (int i = 0; i < 3; ++i) m_fSpecFwd[i] = fHead[i]; }
+		else for (int i = 0; i < 3; ++i) m_fSpecFwd[i] /= l;
+	}
+
+	// Into the eye's frame, then onto its picture plane (tangents, y up).
+	float v[3];
+	QRotInv(q, m_fSpecFwd, v);
+	if (v[2] > -0.2f) { m_bSpecFwdValid = false; return false; }	// behind or at the edge
+	const float tx = v[0] / -v[2], ty = v[1] / -v[2];
+
+	// Tangents to eye pixels. The frustum covers rect fractions of the image.
+	const float fTanL = m_fSpecTan[0], fTanR = m_fSpecTan[1], fTanU = m_fSpecTan[2], fTanD = m_fSpecTan[3];
+	const float sx = (float)nEyeW * m_fSpecRect[2] / (fTanR - fTanL);	// px per tangent
+	const float sy = (float)nEyeH * m_fSpecRect[3] / (fTanU - fTanD);
+	const float ox = (float)nEyeX + (float)nEyeW * m_fSpecRect[0] - fTanL * sx;	// where tangent 0 is
+	const float oy = (float)nEyeY + (float)nEyeH * m_fSpecRect[1] + fTanU * sy;
+	cx = ox + tx * sx;
+	cy = oy - ty * sy;
+
+	// THE HORIZON LEVEL: the world's horizontal through that point, as the
+	// picture shows it, becomes the screen's horizontal. That is how the point
+	// moves on the image when nudged along the horizontal - exact anywhere in
+	// the picture. (Levelling the world's UP instead is not the same thing
+	// off-centre: the two image 2-3 degrees apart there.) Looking straight up
+	// or down there is no horizon, and the cut-out stays upright.
+	auto Level = [&](float fTx, float fTy, const float* pDir)
+	{
+		float h[3] = { -pDir[2], 0.0f, pDir[0] };			// forward x up
+		const float hl = sqrtf(h[0] * h[0] + h[2] * h[2]);
+		fRx = 1.0f; fRy = 0.0f;
+		if (hl > 0.05f)
+		{
+			h[0] /= hl; h[2] /= hl;
+			float hv[3];
+			QRotInv(q, h, hv);
+			const float rx = (hv[0] + fTx * hv[2]) * sx, ry = -(hv[1] + fTy * hv[2]) * sy;
+			const float rl = sqrtf(rx * rx + ry * ry);
+			if (rl > 1e-4f) { fRx = rx / rl; fRy = ry / rl; }
+		}
+		fDx = -fRy; fDy = fRx;					// down, a quarter turn from right
+	};
+	Level(tx, ty, m_fSpecFwd);
+
+	// m_fSpecZoom of the eye's width at the preview's shape, shrunk if the
+	// turn would take a corner outside the eye, then kept inside it.
+	W = m_fSpecZoom * (float)nEyeW;
+	H = W * (float)m_nHeight / (float)m_nWidth;
+	if (H > m_fSpecZoom * (float)nEyeH) { H = m_fSpecZoom * (float)nEyeH; W = H * (float)m_nWidth / (float)m_nHeight; }
+	float hx = 0.5f * (fabsf(fRx) * W + fabsf(fDx) * H);
+	float hy = 0.5f * (fabsf(fRy) * W + fabsf(fDy) * H);
+	float k = 1.0f;
+	if (hx > 0.5f * (float)nEyeW) k = (0.5f * (float)nEyeW) / hx;
+	if (hy * k > 0.5f * (float)nEyeH) k = (0.5f * (float)nEyeH) / hy;
+	W *= k; H *= k; hx *= k; hy *= k;
+	const float x0 = (float)nEyeX + hx, x1 = (float)(nEyeX + nEyeW) - hx;
+	const float y0 = (float)nEyeY + hy, y1 = (float)(nEyeY + nEyeH) - hy;
+	cx = (x0 < x1) ? ((cx < x0) ? x0 : (cx > x1) ? x1 : cx) : 0.5f * (x0 + x1);
+	cy = (y0 < y1) ? ((cy < y0) ? y0 : (cy > y1) ? y1 : cy) : 0.5f * (y0 + y1);
+
+	// Held at the edge, the followed direction becomes the one drawn: left
+	// lagging beyond it, it would keep the view pinned to the edge after the
+	// head stopped, instead of settling from there at once.
+	{
+		float e[3] = { (cx - ox) / sx, -(cy - oy) / sy, -1.0f }, w[3];
+		const float el = sqrtf(e[0] * e[0] + e[1] * e[1] + 1.0f);
+		for (int i = 0; i < 3; ++i) e[i] /= el;
+		QRot(q, e, w);
+		for (int i = 0; i < 3; ++i) m_fSpecFwd[i] = w[i];
+		Level(e[0] / -e[2], e[1] / -e[2], w);		// and level it where it now is
 	}
 	return true;
 }

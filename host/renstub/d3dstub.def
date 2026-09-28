@@ -7,6 +7,7 @@ EXPORTS
     R3D_PublishWorldModels
     R3D_PublishSprites
     R3D_PublishFog
+    R3D_PublishModelEnvMap
     R3D_PublishSkyFog
     R3D_PublishLightAdd
     R3D_PublishFolder2D

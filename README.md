@@ -27,23 +27,27 @@ This is a mod. It ships no game content: you supply your own copy of NOLF.
    small window, to build its font cache. The window closes on its own.
 
 3. Connect your headset: start streaming in Virtual Desktop, or start SteamVR
-   or Meta Quest Link.
+   or Meta Quest Link. With a SteamVR headset (a Steam Frame, an Index), start
+   SteamVR first and then the game, and the game uses SteamVR by itself.
 
-4. Double-click **`Play NOLF VR.bat`**, then put the headset on.
+4. Double-click **`Play No One Lives Forever VR.bat`**, then put the headset on.
 
 If the headset is not connected yet, a notice says the game is waiting for it
 and closes by itself when it connects. After a minute with no headset, the game
 closes and says what to do.
 
-The desktop shows a flat view from your right eye while you play. Alt-tab
-freely: the game keeps running in the headset.
+The desktop shows a steady view from your right eye while you play, for
+streaming or recording: it follows your turns but not the small movements of
+your head, and keeps the horizon level (**Options > VR > Steady desktop
+view** turns it off for the plain eye). Alt-tab freely: the game keeps running
+in the headset.
 
 **What you need:** *No One Lives Forever*, Game of the Year edition, patched to
 1.004 - the release with the four bonus missions; a PC VR headset with an
 OpenXR runtime (developed on a Quest 3 over
-[Virtual Desktop](https://www.vrdesktop.net/); SteamVR and Meta Quest Link
-provide OpenXR too, but only Virtual Desktop has been tested); and Windows 10 or
-11, 64-bit.
+[Virtual Desktop](https://www.vrdesktop.net/), and played on a Steam Frame over
+SteamVR; Meta Quest Link provides OpenXR too, untested); and Windows 10 or 11,
+64-bit.
 
 **Updating to a new version:** unzip the new version into its own folder and
 drag your previous version's `game` folder onto its `Setup.bat`. Your saves and
@@ -78,7 +82,16 @@ Right hand aims and fires; the gun sits where your controller is.
 | hold the Meta button | recenter (also **Options > VR > Recenter**) |
 
 A red dot marks where the gun is pointing, on the surface or the body it will
-hit.
+hit. A **green reticle** in the middle of your view means there is something
+there you can use: press **X** and it is used, even if your hand is pointing a
+little off it. Through a scope, the shot leaves from the scope itself, so
+anything you can see in it you can hit. Getting shot rumbles the controller on
+the side the shot came from.
+
+**Two hands on a pistol:** with a pistol out (P38, revolver, Contender, Luger),
+bring your other hand to the gun and hold its grip - a second hand appears on
+the pistol's grip. While it is there, that grip does not make you run. It is
+for the look and feel only; aiming is the same either way.
 
 **Left-handed? Options > VR > Leftorium (left-handed)** swaps the hands: the gun
 and its trigger go in your left hand (drawn as a left-handed gun), the
@@ -101,17 +114,24 @@ way.
 
 ## Options
 
-In the game: **Options > VR** has Recenter, the Leftorium (left-handed play),
+In the game: **Options > VR** has Recenter, **Show body** and **See yourself in
+mirrors** (both on), the Leftorium (left-handed play),
 snap or smooth turning, turn speed, steering with both grips, the gun's size
 and how far it follows your hand, the aim dot, VR captions, head bob, weapon
-sway, and large menu text.
+sway, large menu text, and **Resolution %**: how sharp the world is, as a
+percentage of your headset's own resolution (100 by default). It applies the
+next time you start the game; lower it if an older graphics card cannot hold
+90 fps.
 
 Everything is also a console variable, set in `game\autoexec.cfg` or passed to
 the launcher. A few more that are not on that page:
 
 | cvar | default | does |
 |---|---|---|
-| `VRHaptics` | 1 | controller rumble on firing |
+| `VRHaptics` | 1 | controller rumble on firing and when hit |
+| `VRHapticsDamage` | 1 | the rumble when hit, on its own |
+| `VRSupportHand` | 1 | the second hand on a pistol |
+| `VRSupportRangeCm` | 22 | how close the other hand must be to the gun hand |
 | `VRWheelSize` | 1.0 | the weapon wheel's size |
 | `VRParticleScale` | 8 | how large smoke, steam and sparks are |
 
@@ -126,6 +146,13 @@ loading screens as a world-locked panel, doors, lifts, glass, characters and
 their attachments, subtitles and the dialogue chooser, alt-tab, and a desktop
 view for streaming or recording.
 
+**New in 1.1, also confirmed in a headset:** your own body when you look down,
+with legs that walk as you move; mirrors that reflect the room and show you in
+them, holding your gun; the world drawn at your headset's full resolution; the
+guns' metallic sheen; characters and objects lit by the lamps around them; a
+second hand on pistols; the steady desktop view; the red dot centered in a scope;
+and SteamVR headsets such as the Steam Frame.
+
 **Known open**, honestly:
 
 - The game has not been played end to end in VR. Individual missions have.
@@ -136,7 +163,6 @@ view for streaming or recording.
   Virtual Desktop, Meta Quest Link and SteamVR-with-a-Quest all present. Other
   controllers under SteamVR have no mapping of ours; SteamVR's own Controller
   Bindings screen can map them, untested.
-- The player's gun draws without its metallic sheen (no environment map yet).
 - Dialogue text could be larger; it is limited by the font sheet.
 - Some lamps in dark interiors read dimmer than they should. This may already
   be fixed: several lighting settings were among the ones setup switches on
@@ -160,7 +186,7 @@ casual one on Fridays and a winter one from 15 December. Same items, different
 art. Add `-PlainMenu` to the launcher to pin the ordinary one.
 
 **Testing aid.** From a command prompt in this folder,
-`"Play NOLF VR.bat" -God` starts a session with god mode, every weapon and every
+`"Play No One Lives Forever VR.bat" -God` starts a session with god mode, every weapon and every
 mission unlocked. It lasts for that session only.
 
 Bug reports with a level name and a screenshot are worth a great deal.

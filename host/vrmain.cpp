@@ -225,17 +225,17 @@ static void TellPlayerAndCloseGame(int nReason)
 {
 	const wchar_t* pszText =
 		(nReason == 2)
-		? L"NOLF VR could not find a VR headset.\n\n"
+		? L"No One Lives Forever VR could not find a VR headset.\n\n"
 		  L"Connect the headset first: start streaming in Virtual Desktop, or start "
 		  L"SteamVR or Oculus Link, and make sure the headset is awake and on your head.\n\n"
-		  L"Then double-click Play NOLF VR.bat again. The game will close now."
+		  L"Then double-click Play No One Lives Forever VR.bat again. The game will close now."
 		: (nReason == 1)
-		? L"NOLF VR could not start OpenXR, the standard PC VR interface.\n\n"
+		? L"No One Lives Forever VR could not start OpenXR, the standard PC VR interface.\n\n"
 		  L"Install or start your headset's PC software - Virtual Desktop (with its "
 		  L"OpenXR runtime), SteamVR, or the Meta Quest Link app - and make it the "
 		  L"active OpenXR runtime.\n\n"
-		  L"Then double-click Play NOLF VR.bat again. The game will close now."
-		: L"NOLF VR could not start the headset session. Collect report.bat saves the "
+		  L"Then double-click Play No One Lives Forever VR.bat again. The game will close now."
+		: L"No One Lives Forever VR could not start the headset session. Collect report.bat saves the "
 		  L"logs for a bug report.\n\nThe game will close now.";
 	// The game first, then the message: the box is modal and waits for OK.
 	// Every visible window of the engine's class, not the first FindWindow
@@ -250,7 +250,7 @@ static void TellPlayerAndCloseGame(int nReason)
 				(void*)h, bOk ? "yes" : "NO");
 		}
 		return TRUE; }, 0);
-	MessageBoxW(nullptr, pszText, L"NOLF VR", MB_OK | MB_ICONWARNING | MB_TOPMOST | MB_SETFOREGROUND);
+	MessageBoxW(nullptr, pszText, L"No One Lives Forever VR", MB_OK | MB_ICONWARNING | MB_TOPMOST | MB_SETFOREGROUND);
 	// And again once the player has read it, in case the first did not land.
 	EnumWindows([](HWND h, LPARAM) -> BOOL {
 		wchar_t cls[64] = { 0 };
@@ -262,7 +262,7 @@ static void TellPlayerAndCloseGame(int nReason)
 int main(int argc, char** argv)
 {
 	HostLog::Open("vrhost");
-	Msg("=== NOLF1 VR host - M5 ===");
+	Msg("=== No One Lives Forever VR host ===");
 	// SAY SO IF THE CONSOLE IS CLOSED. Closing this window ends the process
 	// with no crash record and nothing in the log - which is exactly how one
 	// session's host vanished while waiting for a headset, unexplained.
@@ -342,8 +342,16 @@ int main(int argc, char** argv)
 	// 3:2 is 1280 rows and shows the whole card with a little blue above
 	// and below. The tester preferred wide and a little taller, judged by eye.
 	float fMenuAspect = 1.5f;
+	// THE SPECTATOR VIEW on the desktop (see MirrorWindow::SetSpectator): on
+	// unless --spectator 0, following the head over --spectator-smooth seconds,
+	// a cut-out --spectator-zoom of the eye wide.
+	int nSpectator = 1;
+	float fSpecSmooth = 0.35f, fSpecZoom = 0.78f;
 	for (int i = 1; i + 1 < argc; ++i)
 	{
+		if (!strcmp(argv[i], "--spectator"))        nSpectator  = atoi(argv[i + 1]);
+		if (!strcmp(argv[i], "--spectator-smooth")) fSpecSmooth = (float)atof(argv[i + 1]);
+		if (!strcmp(argv[i], "--spectator-zoom"))   fSpecZoom   = (float)atof(argv[i + 1]);
 		if (!strcmp(argv[i], "--menu-width"))  fMenuWidth  = (float)atof(argv[i + 1]);
 		if (!strcmp(argv[i], "--menu-dist"))   fMenuDist   = (float)atof(argv[i + 1]);
 		if (!strcmp(argv[i], "--menu-aspect")) fMenuAspect = (float)atof(argv[i + 1]);
@@ -414,6 +422,12 @@ int main(int argc, char** argv)
 	const bool bMirror = bWantMirror &&
 		mirror.Create(device.get(), capture.EyeWidth(), capture.EyeHeight(), true);
 	if (bMirror) mirror.CoverWindow(capture.Window());
+	if (fSpecSmooth < 0.0f) fSpecSmooth = 0.0f; if (fSpecSmooth > 3.0f) fSpecSmooth = 3.0f;
+	if (fSpecZoom < 0.4f) fSpecZoom = 0.4f; if (fSpecZoom > 1.0f) fSpecZoom = 1.0f;
+	if (bMirror) mirror.SetSpectator(nSpectator != 0, fSpecSmooth, fSpecZoom);
+	Msg("desktop view: %s", nSpectator ? "spectator (steadied, horizon level)" : "plain right eye");
+	bool bMirrorDue = false;
+	int nMirX = 0, nMirY = 0, nMirW = 0, nMirH = 0;
 
 	// --- main loop --------------------------------------------------------
 	std::vector<double> submitMs;
@@ -1111,11 +1125,13 @@ int main(int argc, char** argv)
 				}
 				if (bMenu) xr.UpdateMenuAnchor();
 
-				// Desktop preview - the right eye, or the whole menu.
+				// Desktop preview - the right eye, or the whole menu. Presented
+				// after EndFrame below, so the spectator view reads the pose this
+				// very picture is declared with, not the previous frame's.
 				if (bMirror)
 				{
-					mirror.Present(context.get(), lastFrame.get(),
-						nRx, nSy, nSw, nSh);
+					bMirrorDue = true;
+					nMirX = nRx; nMirY = nSy; nMirW = nSw; nMirH = nSh;
 				}
 				bHaveImage = a && b;
 				if (bHaveImage) ++nPresented;
@@ -1203,6 +1219,24 @@ int main(int argc, char** argv)
 		}
 		xr.EndFrame(bHaveImage, bInMenu, bPauseQuad);
 		tStepEnd = HostLog::NowMs();
+
+		if (bMirrorDue)
+		{
+			bMirrorDue = false;
+			if (mirror.Spectator())
+			{
+				// The right eye as the runtime was told it: its frustum, the
+				// orientation it was rendered from, and where in the eye image
+				// that frustum sits. Only valid for the world in the eyes.
+				const XrVr::DeclaredView& dv = xr.Declared(1);
+				const float q[4] = { dv.q.x, dv.q.y, dv.q.z, dv.q.w };
+				mirror.SetSpectatorView(q, tanf(dv.fov.angleLeft), tanf(dv.fov.angleRight),
+					tanf(dv.fov.angleUp), tanf(dv.fov.angleDown),
+					dv.rx, dv.ry, dv.rw, dv.rh,
+					dv.bValid && !bInMenu && !bPauseQuad);
+			}
+			mirror.Present(context.get(), lastFrame.get(), nMirX, nMirY, nMirW, nMirH);
+		}
 		if (tStepCopy < tPrevLoop) tStepCopy = tPrevLoop;
 		if (tStepMarker < tStepCopy) tStepMarker = tStepCopy;
 		if (tStepSubmit < tStepMarker) tStepSubmit = tStepMarker;

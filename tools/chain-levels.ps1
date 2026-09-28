@@ -47,6 +47,12 @@ param(
 $ErrorActionPreference = 'Continue'
 $Root = Split-Path $PSScriptRoot -Parent
 $Game = Join-Path $Root 'game'
+# NEVER KILL A GAME THIS SCRIPT DID NOT START. A running lithtech.exe is most
+# likely a player's session; stop and say so instead of closing it.
+if (Get-Process lithtech -ErrorAction SilentlyContinue) {
+    Write-Host '  STOPPED: the game is already running (a player may be in it). Close it first; nothing was touched.' -ForegroundColor Red
+    exit 1
+}
 $Out  = Join-Path $Root $OutDir
 New-Item -ItemType Directory -Force $Out | Out-Null
 
@@ -72,11 +78,10 @@ if (-not $firsts.Count) { throw 'no missions matched' }
 
 # ---- the fake host, so the client believes a headset is live ------------
 $fakeLog = Join-Path $Root 'logs\fakehost-chain.log'
-Get-Process lithtech -ErrorAction SilentlyContinue | ForEach-Object { try { $_.Kill() } catch {} }
 Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -match 'fakehost' } |
     ForEach-Object { try { Stop-Process -Id $_.ProcessId -Force } catch {} }
 $fake = Start-Process -FilePath 'python' `
-        -ArgumentList @((Join-Path $PSScriptRoot 'fakehost.py'), '--rhand', '0,0,0') `
+        -ArgumentList @(('"' + (Join-Path $PSScriptRoot 'fakehost.py') + '"'), '--rhand', '0,0,0') `
         -PassThru -WindowStyle Minimized -RedirectStandardOutput $fakeLog
 Start-Sleep -Seconds 2
 if ($fake.HasExited) { throw "fake host exited immediately (exit $($fake.ExitCode))" }
@@ -154,17 +159,23 @@ $renLive = Join-Path $Game 'logs\renstub.log'
 
 Write-Host ("chaining {0} missions, a new scene every {1} s by the level's own exit" -f $firsts.Count, $EverySec)
 $mi = 0
+$p = $null
 foreach ($m in $firsts) {
     $mi++
     Write-Host ("[{0}/{1}] {2}  ({3})" -f $mi, $firsts.Count, $m.short, $m.label) -ForegroundColor Cyan
     # THE PREVIOUS PROCESS MUST BE GONE BEFORE THE LOG CAN BE MOVED. A crashed
     # one lingers for a second or two holding the file, and both the delete here
-    # and the renderer's own rotation then fail silently.
-    for ($w = 0; $w -lt 10; $w++) {
-        $alive = @(Get-Process lithtech -ErrorAction SilentlyContinue)
-        if (-not $alive.Count) { break }
-        foreach ($q in $alive) { try { $q.Kill() } catch {} }
+    # and the renderer's own rotation then fail silently. Only the process
+    # this script started is killed.
+    for ($w = 0; $w -lt 10 -and $p -and -not $p.HasExited; $w++) {
+        try { $p.Kill() } catch {}
         Start-Sleep -Milliseconds 500
+    }
+    # Any other lithtech.exe is one this script did not start - someone
+    # launched the game mid-run. Leave it alone.
+    if (Get-Process lithtech -ErrorAction SilentlyContinue | Where-Object { -not $p -or $_.Id -ne $p.Id }) {
+        Write-Host '  STOPPED: another lithtech.exe is running (a player may be in it). It was left alone; the chain ends here.' -ForegroundColor Red
+        break
     }
     for ($w = 0; $w -lt 6 -and (Test-Path -LiteralPath $renLive); $w++) {
         Remove-Item -LiteralPath $renLive -Force -ErrorAction SilentlyContinue

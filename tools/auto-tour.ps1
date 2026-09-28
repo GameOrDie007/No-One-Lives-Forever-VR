@@ -42,6 +42,13 @@ $ErrorActionPreference = 'Stop'
 $Root = Split-Path $PSScriptRoot -Parent
 $Game = Join-Path $Root 'game'
 
+# NEVER KILL A GAME THIS SCRIPT DID NOT START. A running lithtech.exe is most
+# likely a player's session; stop and say so instead of closing it.
+if (Get-Process lithtech -ErrorAction SilentlyContinue) {
+    Write-Host '  STOPPED: the game is already running (a player may be in it). Close it first; nothing was touched.' -ForegroundColor Red
+    exit 1
+}
+
 # THE PLAYER'S SETTINGS ARE NOT THE DESK'S - the engine writes autoexec.cfg
 # when the game closes. Snapshot before, restore after; a snapshot a killed run
 # left behind is restored first. See look-shot.ps1.
@@ -71,11 +78,10 @@ Write-Host ("touring {0} worlds, {1} stops each, ~{2} s per level (~{3} min tota
 # fails missions and empties magazines.
 $fakeLog = Join-Path $Root 'logs\fakehost-tour.log'
 New-Item -ItemType Directory -Force (Split-Path $fakeLog) | Out-Null
-Get-Process lithtech -ErrorAction SilentlyContinue | ForEach-Object { try { $_.Kill() } catch {} }
 Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -match 'fakehost' } |
     ForEach-Object { try { Stop-Process -Id $_.ProcessId -Force } catch {} }
 $fake = Start-Process -FilePath 'python' `
-        -ArgumentList @((Join-Path $PSScriptRoot 'fakehost.py'), '--rhand', '0,0,0') `
+        -ArgumentList @(('"' + (Join-Path $PSScriptRoot 'fakehost.py') + '"'), '--rhand', '0,0,0') `
         -PassThru -WindowStyle Minimized -RedirectStandardOutput $fakeLog
 Start-Sleep -Seconds 2
 if ($fake.HasExited) { throw "fake host exited immediately (exit $($fake.ExitCode))" }
@@ -89,24 +95,22 @@ $primary = [System.Windows.Forms.Screen]::AllScreens | Where-Object { $_.Primary
 # not composited to the front, and it returns TRUE while doing it - so the first
 # tour ran perfectly, wrote six 2560x1384 pictures, and every one was empty
 # while the log showed 4000 presents. SetForegroundWindow is refused to a
-# process that is not itself in front; an ALT tap counts as a user gesture and
-# the next request is honoured. Same routine look-shot.ps1 uses before it types
-# a key, for the same reason.
+# process that is not itself in front, so this asks a few times.
+#
+# NO ALT TAP. It used to send one to win the foreground, but that key goes to
+# whatever window IS in front - by definition not the game - and a person
+# working in it gets their menu bar opened under them. A key is sent only to
+# the game; a window that will not come forward costs blank pictures, which
+# the blank check below counts.
 Add-Type -Name Fg -Namespace TourW -MemberDefinition @'
 [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
 [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int n);
 [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
-[DllImport("user32.dll")] public static extern void keybd_event(byte vk, byte scan, uint flags, UIntPtr extra);
 '@
 function Bring-Front($proc) {
     $proc.Refresh()
     if ($proc.MainWindowHandle -eq [IntPtr]::Zero) { return $false }
     for ($try = 0; $try -lt 6; $try++) {
-        if ($try -gt 0) {
-            [TourW.Fg]::keybd_event(0x12, 0, 0, [UIntPtr]::Zero)
-            [TourW.Fg]::keybd_event(0x12, 0, 2, [UIntPtr]::Zero)
-            Start-Sleep -Milliseconds 150
-        }
         [TourW.Fg]::ShowWindow($proc.MainWindowHandle, 9) | Out-Null
         [TourW.Fg]::SetForegroundWindow($proc.MainWindowHandle) | Out-Null
         Start-Sleep -Milliseconds 500
@@ -137,11 +141,18 @@ $rez = @('NOLF.rez','NOLF2.rez','NOLFdll.rez','NOLFl.rez','custom',
 $rows = @()
 $csv  = Join-Path $Out 'summary.csv'
 $i = 0
+$p = $null
 $ErrorActionPreference = 'Continue'
 
 foreach ($w in $worlds) {
     $i++
   try {
+    # Any lithtech.exe but the previous level's own is one this script did
+    # not start - someone launched the game mid-run. Leave it alone.
+    if (Get-Process lithtech -ErrorAction SilentlyContinue | Where-Object { -not $p -or $_.Id -ne $p.Id }) {
+        Write-Host '  STOPPED: another lithtech.exe is running (a player may be in it). It was left alone; the tour ends here.' -ForegroundColor Red
+        break
+    }
     $short = ($w -replace '\.DAT$','') -replace '/','\'
     $tag   = ($w -replace '\.DAT$','') -replace '[/\\]','_'
     Write-Host ("[{0}/{1}] {2}" -f $i, $worlds.Count, $short) -ForegroundColor Yellow
@@ -242,7 +253,8 @@ foreach ($w in $worlds) {
         try { $p.CloseMainWindow() | Out-Null } catch {}
         Start-Sleep -Seconds 2
     }
-    Get-Process lithtech -ErrorAction SilentlyContinue | ForEach-Object { try { $_.Kill() } catch {} }
+    # Only the process this script started.
+    if (-not $p.HasExited) { try { $p.Kill() } catch {}; $p.WaitForExit(5000) | Out-Null }
     Start-Sleep -Milliseconds 800
 
     # The logs, from this run's own directory.
@@ -289,7 +301,7 @@ foreach ($w in $worlds) {
     $rows | Export-Csv -NoTypeInformation -Path $csv
   } catch {
     Write-Host ("      ERROR: {0}" -f $_.Exception.Message) -ForegroundColor Red
-    Get-Process lithtech -ErrorAction SilentlyContinue | ForEach-Object { try { $_.Kill() } catch {} }
+    if ($p -and -not $p.HasExited) { try { $p.Kill() } catch {}; $p.WaitForExit(5000) | Out-Null }
   }
 }
 

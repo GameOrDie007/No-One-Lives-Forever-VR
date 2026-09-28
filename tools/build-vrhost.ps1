@@ -25,7 +25,7 @@ $sources = @('vrmain.cpp', 'xrvr.cpp', 'capture.cpp', 'mirror.cpp', 'sharedframe
            ForEach-Object { "`"$(Join-Path $Root "host\$_")`"" }
 # The version resource (see host\res\version.h), linked in with the sources.
 . (Join-Path $PSScriptRoot 'version-res.ps1')
-$ver = New-VersionResCommand -ObjDir $Obj -FileName 'nolfvr.exe' -Description 'NOLF1 VR - OpenXR host (headset, mirror)' -Type app
+$ver = New-VersionResCommand -ObjDir $Obj -FileName 'nolfvr.exe' -Description 'No One Lives Forever VR - OpenXR host (headset, mirror)' -Type app
 $sources += "`"$($ver.Res)`""
 
 $cl = @(

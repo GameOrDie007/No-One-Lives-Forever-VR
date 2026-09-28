@@ -34,6 +34,12 @@ param(
 
 $ErrorActionPreference = 'Continue'
 $Root = Split-Path $PSScriptRoot -Parent
+# NEVER KILL A GAME THIS SCRIPT DID NOT START. A running lithtech.exe is most
+# likely a player's session; stop and say so instead of closing it.
+if (Get-Process lithtech -ErrorAction SilentlyContinue) {
+    Write-Host '  STOPPED: the game is already running (a player may be in it). Close it first; nothing was touched.' -ForegroundColor Red
+    exit 1
+}
 $x, $y = ($At -split ',') | ForEach-Object { [int]$_ }
 
 Add-Type -Namespace MM -Name In -MemberDefinition @'
@@ -50,7 +56,7 @@ $null = [MM.In]::SetProcessDPIAware()
 $fake = $null
 if (-not $Mono) {
     $fakeLog = Join-Path $Root 'logs\fakehost-mouse.log'
-    $fake = Start-Process -FilePath 'python' -ArgumentList @((Join-Path $PSScriptRoot 'fakehost.py'), '--static', '0,0,0') `
+    $fake = Start-Process -FilePath 'python' -ArgumentList @(('"' + (Join-Path $PSScriptRoot 'fakehost.py') + '"'), '--static', '0,0,0') `
             -PassThru -WindowStyle Minimized -RedirectStandardOutput $fakeLog
     Start-Sleep -Seconds 2
 }
@@ -65,10 +71,24 @@ $runner = Start-Process -FilePath 'powershell' -PassThru -ArgumentList @(
     '-RenderDll','d3dstub.ren','-Title','MOUSE','-Width',"$ResW",'-Height',"$ResH",
     '-Set',($setAll -join ','))
 
+# THE GAME THIS SCRIPT STARTED is run.ps1's child, found by parent pid and
+# never by name: any other lithtech.exe may be a player's.
+function Get-OwnGame($runner) {
+    $c = Get-CimInstance Win32_Process -Filter "ParentProcessId=$($runner.Id) AND Name='lithtech.exe'" -ErrorAction SilentlyContinue |
+         Select-Object -First 1
+    if ($c) { try { return Get-Process -Id $c.ProcessId -ErrorAction Stop } catch {} }
+    return $null
+}
+
 Write-Host ("  waiting {0} s for the menu..." -f $Settle) -ForegroundColor DarkGray
 Start-Sleep -Seconds $Settle
-$g = Get-Process lithtech -ErrorAction SilentlyContinue | Select-Object -First 1
-if (-not $g) { Write-Host '  the game is not running' -ForegroundColor Red; exit 1 }
+$g = Get-OwnGame $runner
+if (-not $g -or $g.HasExited) {
+    Write-Host '  the game is not running' -ForegroundColor Red
+    if ($fake -and -not $fake.HasExited) { try { $fake.Kill() } catch {} }
+    if ($runner -and -not $runner.HasExited) { try { $runner.Kill() } catch {} }
+    exit 1
+}
 
 # BEFORE the click, so a miss still shows where the items actually are - the
 # first run at any new resolution is as much a survey as a test.
@@ -86,20 +106,26 @@ if ([MM.In]::GetForegroundWindow() -ne $g.MainWindowHandle) {
     # Move first, let the menu notice the hover, then press and release.
     $null = [MM.In]::SetCursorPos($x, $y)
     Start-Sleep -Milliseconds 400
-    [MM.In]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)   # LEFTDOWN
-    Start-Sleep -Milliseconds 80
-    [MM.In]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)   # LEFTUP
-    Write-Host ("  clicked at {0},{1}" -f $x, $y) -ForegroundColor Cyan
+    # Again at the moment of the press: focus can move during the hover wait.
+    if ([MM.In]::GetForegroundWindow() -ne $g.MainWindowHandle) {
+        Write-Host '  STOPPED: the game is no longer in front; not clicking' -ForegroundColor Red
+    } else {
+        [MM.In]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)   # LEFTDOWN
+        Start-Sleep -Milliseconds 80
+        [MM.In]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)   # LEFTUP
+        Write-Host ("  clicked at {0},{1}" -f $x, $y) -ForegroundColor Cyan
+    }
 }
 Start-Sleep -Seconds $After
 
-$alive = [bool](Get-Process lithtech -ErrorAction SilentlyContinue)
+$alive = -not $g.HasExited
 & (Join-Path $PSScriptRoot 'window-shot.ps1') -Out (Join-Path $Root $Out) -NoMove -Width $ResW -Height $ResH |
     ForEach-Object { Write-Host ("    " + $_) -ForegroundColor DarkGray }
 
-Get-Process lithtech -ErrorAction SilentlyContinue | ForEach-Object { try { $_.CloseMainWindow() | Out-Null } catch {} }
+# Only the process this script started.
+if (-not $g.HasExited) { try { $g.CloseMainWindow() | Out-Null } catch {} }
 Start-Sleep -Seconds 2
-Get-Process lithtech -ErrorAction SilentlyContinue | ForEach-Object { try { $_.Kill() } catch {} }
+if (-not $g.HasExited) { try { $g.Kill() } catch {} }
 if ($fake -and -not $fake.HasExited) { try { $fake.Kill() } catch {} }
 if ($runner -and -not $runner.HasExited) { try { $runner.Kill() } catch {} }
 

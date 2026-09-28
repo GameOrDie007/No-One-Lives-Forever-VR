@@ -327,14 +327,111 @@ if ($MenuWidth -gt 0) { $hostArgs += @('--menu-width', $MenuWidth) }
 if ($MenuDist  -gt 0) { $hostArgs += @('--menu-dist',  $MenuDist)  }
 # -MenuAspect 0 presents the whole eye as the panel, the pre-13 September shape.
 $hostArgs += @('--menu-aspect', $MenuAspect)
+# THE SPECTATOR VIEW on the desktop: steadied and level, or the plain eye.
+# Options > VR > Desktop view saves VRSpectator in autoexec.cfg; the host reads
+# it at launch, so a change applies next start. -Set VRSpectator=0 wins.
+$spec = 1
+$specCfg = Join-Path $Root 'game\autoexec.cfg'
+if (Test-Path -LiteralPath $specCfg) {
+    $specLine = Select-String -LiteralPath $specCfg -Pattern '^"VRSpectator"\s+"([\d.]+)"' | Select-Object -First 1
+    if ($specLine) { $spec = [int][double]$specLine.Matches[0].Groups[1].Value }
+}
+$specSet = $Set | Where-Object { $_ -match '^\s*VRSpectator\s*=\s*([\d.]+)' } | Select-Object -First 1
+if ($specSet -and $specSet -match '([\d.]+)\s*$') { $spec = [int][double]$Matches[1] }
+$hostArgs += @('--spectator', $(if ($spec -ne 0) { 1 } else { 0 }))
 if ($NoHost) {
     Write-Host 'NO HOST: the OpenXR host is not started (-NoHost); something else must provide the shared block.' -ForegroundColor Yellow
 } else {
     # The host reads this from its environment, which it inherits from here.
     $env:NOLFVR_FRESH_WAIT_MS = [string]$FreshWaitMs
     if ($FreshWaitMs -gt 0) { Write-Host ("FRESH-FRAME WAIT: up to {0} ms" -f $FreshWaitMs) -ForegroundColor Green }
+    # The host writes the headset's recommended eye size here (see below); a
+    # file left by an earlier session must not be mistaken for this one's.
+    $eyeFile = Join-Path $Root 'headset-eye.txt'
+    Remove-Item -LiteralPath $eyeFile -Force -ErrorAction SilentlyContinue
+    # A RUNNING STEAMVR IS THE HEADSET THE PLAYER MEANT. A game started from
+    # Steam gets XR_RUNTIME_JSON from SteamVR; one started from this folder
+    # gets the system's runtime, and on a PC that also streams a Quest that is
+    # Virtual Desktop - which waited for a Quest while a Steam Frame sat on his
+    # head with SteamVR up. So with SteamVR running (vrserver) and no runtime
+    # already chosen, the host is pointed at SteamVR for THIS launch only; the
+    # system setting is not touched, and with SteamVR not running nothing changes.
+    if (-not $env:XR_RUNTIME_JSON) {
+        $vrs = Get-Process vrserver -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($vrs) {
+            $svRoot = $null
+            # ...\SteamVR\bin\win64\vrserver.exe -> ...\SteamVR
+            try { if ($vrs.Path) { $svRoot = Split-Path (Split-Path (Split-Path $vrs.Path -Parent) -Parent) -Parent } } catch { }
+            if (-not $svRoot) {
+                try {
+                    $steam = (Get-ItemProperty -Path 'HKCU:\Software\Valve\Steam' -Name SteamPath -ErrorAction Stop).SteamPath
+                    $svRoot = Join-Path ($steam -replace '/', '\') 'steamapps\common\SteamVR'
+                } catch { }
+            }
+            $svManifest = if ($svRoot) { Join-Path $svRoot 'steamxr_win64.json' } else { $null }
+            if ($svManifest -and (Test-Path -LiteralPath $svManifest)) {
+                $env:XR_RUNTIME_JSON = $svManifest
+                Write-Host ("SteamVR is running: VR goes through SteamVR for this launch ({0})" -f $svManifest) -ForegroundColor Green
+            } else {
+                Write-Host 'SteamVR is running but its OpenXR manifest was not found; using the system''s OpenXR runtime.' -ForegroundColor Yellow
+            }
+        }
+    }
     Start-Process -FilePath $Exe -ArgumentList $hostArgs -WorkingDirectory $Root
     Start-Sleep -Seconds 4
+    for ($i = 0; $i -lt 8 -and -not (Test-Path -LiteralPath $eyeFile); $i++) { Start-Sleep -Milliseconds 500 }
+}
+
+# THE WORLD RENDERS AT THE HEADSET'S RESOLUTION. The game's screen stays at
+# run.ps1's 3840x2076 - its menus, HUD and subtitles are laid out for that and
+# its bitmap font code cannot go past about 5,000 px a strip, so the engine
+# itself cannot run at a headset's size - and the renderer is told to give it
+# more PIXELS than coordinates (+StubRenderScale100): the world fills them, the
+# 2D is laid out exactly as before. The scale comes from the eye height the
+# headset asked the host for, times Options > VR > Resolution % (the
+# VRResolution line the engine saves in autoexec.cfg; 100 when absent). It was
+# 1920x2076 an eye against the 3072x3264 a Quest 3 asks for: a tester found the
+# picture soft and the plants pixelated. With no headset yet the host cannot
+# say, and the scale stays 100. An explicit -Set StubRenderScale100=... wins.
+$eyeFile = Join-Path $Root 'headset-eye.txt'
+if (-not ($Set | Where-Object { $_ -match '^\s*StubRenderScale100\s*=' }) -and (Test-Path -LiteralPath $eyeFile)) {
+    $rec = (Get-Content -LiteralPath $eyeFile -TotalCount 1) -split '\s+'
+    $recW = 0; $recH = 0
+    if ($rec.Count -ge 2 -and [int]::TryParse($rec[0], [ref]$recW) -and [int]::TryParse($rec[1], [ref]$recH) -and $recH -gt 0) {
+        $pct = 100
+        $cfgFile = Join-Path $Root 'game\autoexec.cfg'
+        if (Test-Path -LiteralPath $cfgFile) {
+            $line = Select-String -LiteralPath $cfgFile -Pattern '^"VRResolution"\s+"([\d.]+)"' | Select-Object -First 1
+            if ($line) { $pct = [int][double]$line.Matches[0].Groups[1].Value }
+        }
+        if ($pct -lt 60) { $pct = 60 }
+        if ($pct -gt 125) { $pct = 125 }
+        # The game's screen height is run.ps1's 2076 unless the caller set one.
+        $modeH = 2076
+        $sh = $Set | Where-Object { $_ -match '^\s*ScreenHeight\s*=\s*(\d+)' } | Select-Object -First 1
+        if ($sh -and $sh -match '(\d+)\s*$') { $modeH = [int]$Matches[1] }
+        $scale = [int][math]::Round(100.0 * $recH * $pct / 100.0 / $modeH)
+        if ($scale -lt 100) { $scale = 100 }
+        if ($scale -gt 200) { $scale = 200 }
+        $Set = @("StubRenderScale100=$scale") + $Set
+        Write-Host ("resolution: world at {0}% ({1}x{2} per eye) - {3}% of the headset's {4}x{5}" -f `
+            $scale, [int](1920 * $scale / 100), [int]($modeH * $scale / 100), $pct, $recW, $recH) -ForegroundColor Cyan
+    }
+}
+
+# RENDERER SWITCHES THAT OPTIONS > VR SAVES. The renderer reads its switches
+# from its command line only, so a row that writes one into autoexec.cfg acts
+# only once the launcher passes it on - "Show body (restart)" saved StubBody
+# and nothing ever read it back. An explicit -Set wins.
+$swCfg = Join-Path $Root 'game\autoexec.cfg'
+# Show body is saved as VRShowBody: 1.0 saved the old row as StubBody 0 in
+# every install, and that would keep the body off after an upgrade.
+foreach ($pair in @(@('VRShowBody', 'StubBody'), @('StubMirrorBody', 'StubMirrorBody'))) {
+    $cfgName = $pair[0]; $k = $pair[1]
+    if ($Set | Where-Object { $_ -match ('^\s*' + $k + '\s*=') }) { continue }
+    if (-not (Test-Path -LiteralPath $swCfg)) { continue }
+    $swLine = Select-String -LiteralPath $swCfg -Pattern ('^"' + $cfgName + '"\s+"([\d.]+)"') | Select-Object -First 1
+    if ($swLine) { $Set += ('{0}={1}' -f $k, [int][double]$swLine.Matches[0].Groups[1].Value) }
 }
 
 # Give the game window the keyboard, and keep trying for a few seconds.

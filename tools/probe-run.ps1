@@ -22,7 +22,8 @@
 # a run whose second variable silently did not apply already cost one wrong
 # A/B here.
 #
-# Kills by process name, and verifies the process is gone before returning.
+# Refuses to start while any lithtech.exe is running (it may be a player's), and
+# closes only the process it started, verifying it is gone before returning.
 
 param(
     [int]$Seconds = 35,
@@ -37,11 +38,12 @@ $Root = Split-Path $PSScriptRoot -Parent
 $Game = Join-Path $Root 'game'
 
 # Nothing else may be holding the game folder or the shared block.
-Get-Process lithtech -ErrorAction SilentlyContinue | ForEach-Object {
-    Write-Host "killing a leftover lithtech.exe (pid $($_.Id))" -ForegroundColor Yellow
-    try { $_.Kill() } catch {}
+# NEVER KILL A GAME THIS SCRIPT DID NOT START. A running lithtech.exe is most
+# likely a player's session; stop and say so instead of closing it.
+if (Get-Process lithtech -ErrorAction SilentlyContinue) {
+    Write-Host '  STOPPED: the game is already running (a player may be in it). Close it first; nothing was touched.' -ForegroundColor Red
+    exit 1
 }
-Start-Sleep -Milliseconds 500
 
 $before = Get-ChildItem (Join-Path $Game 'logs') -Directory -ErrorAction SilentlyContinue |
           ForEach-Object { $_.Name }
@@ -50,7 +52,7 @@ $fake = $null
 if ($FakeHost) {
     $py = Join-Path $PSScriptRoot 'fakehost.py'
     Write-Host "starting the fake host ($FakeHostArgs)" -ForegroundColor Cyan
-    $fakeArgs = @($py)
+    $fakeArgs = @('"' + $py + '"')   # quoted: Start-Process quotes nothing (a spaced path split)
     if ($FakeHostArgs) { $fakeArgs += ($FakeHostArgs -split ' ') }
     $fakeLog = Join-Path $Root 'logs\fakehost.log'
     New-Item -ItemType Directory -Force (Split-Path $fakeLog) | Out-Null
@@ -149,13 +151,13 @@ if (-not $p.HasExited) {
     try { $p.CloseMainWindow() | Out-Null } catch {}
     Start-Sleep -Seconds 3
 }
-Get-Process lithtech -ErrorAction SilentlyContinue | ForEach-Object { try { $_.Kill() } catch {} }
+# Only the process this script started.
+if (-not $p.HasExited) { try { $p.Kill() } catch {}; $p.WaitForExit(5000) | Out-Null }
 Start-Sleep -Seconds 1
 
 if ($fake -and -not $fake.HasExited) { try { $fake.Kill() } catch {} }
 
-$still = Get-Process lithtech -ErrorAction SilentlyContinue
-if ($still) { Write-Host 'WARNING: lithtech.exe is still running' -ForegroundColor Red }
+if (-not $p.HasExited) { Write-Host "WARNING: lithtech.exe (pid $($p.Id)) is still running" -ForegroundColor Red }
 
 $after = Get-ChildItem (Join-Path $Game 'logs') -Directory -ErrorAction SilentlyContinue |
          Where-Object { $before -notcontains $_.Name } | Sort-Object Name

@@ -314,32 +314,62 @@ class Model:
         for i in range(self.n_planes):
             yield struct.unpack_from("<4f", self.world.b, self.plane_start + i * 16)
 
-    # THE SURFACE RECORD, 53 bytes. Everything named here is checked, and the
-    # checks are in surface_check() below.
+    # THE SURFACE RECORD IS VARIABLE LENGTH. 50 fixed bytes, a u8 count of
+    # effect strings, per effect a u16 length + name and a u16 length +
+    # parameter, then the u16 surface type. Everything named here is checked,
+    # and the checks are in surface_check() below.
     #
     #   +0   float3   texture-space origin
     #   +12  float3   texture-space U
     #   +24  float3   texture-space V
     #   +36  u16      TEXTURE INDEX into self.textures
     #   +38  u32      PLANE INDEX into self.planes()
-    #   +42  u32      undecoded
-    #   +46  u32      undecoded
-    #   +50  u8       undecoded
-    #   +51  u16      SURFACE FLAGS
-    SURFACE_SIZE = 53
+    #   +42  u32      ENGINE SURFACE FLAGS (SURF_: 0x80 lightmap, 0x10 sky,
+    #                 0x04 invisible, 0x200 hullmaker, 0x2000 vis portal)
+    #   +46  u32      undecoded (0, 1, or a colour)
+    #   +50  u8       EFFECT COUNT, then (u16 len, name, u16 len, param) each
+    #   then u16      SURFACE TYPE (SurfaceDefs.h: 202 invisible, 110 sky,
+    #                 201 liquid; the footstep type, not a render flag)
+    #
+    # The count is 0 on nearly every surface, which is where "53 bytes" came
+    # from. One "Pan" face early in a VisBSP shifted every record after it,
+    # and that - not an inserted block - is why eight VisBSPs would not
+    # locate. With the strings walked, all 20198 models parse. The effect
+    # "mirror" (param "overlay") is how a level marks a MIRROR; there is no
+    # flag for it.
+    SURFACE_SIZE = 53          # the record with no effect string
 
     def surfaces(self):
         b = self.world.b
+        o = self.surface_start
+        nt, npl = len(self.textures), self.n_planes
         for i in range(self.n_surfaces):
-            o = self.surface_start + i * self.SURFACE_SIZE
+            tex = struct.unpack_from("<H", b, o + 36)[0]
+            pln = struct.unpack_from("<I", b, o + 38)[0]
+            neff = b[o + 50]
+            q = o + 51
+            effects = []
+            if tex < nt and pln < npl and neff <= 4:
+                for _ in range(neff):
+                    ln, = struct.unpack_from("<H", b, q)
+                    name = b[q + 2:q + 2 + ln].decode("latin-1"); q += 2 + ln
+                    ln, = struct.unpack_from("<H", b, q)
+                    param = b[q + 2:q + 2 + ln].decode("latin-1"); q += 2 + ln
+                    effects.append((name, param))
             yield {
+                "offset": o,
                 "origin": struct.unpack_from("<3f", b, o),
                 "u": struct.unpack_from("<3f", b, o + 12),
                 "v": struct.unpack_from("<3f", b, o + 24),
-                "texture": struct.unpack_from("<H", b, o + 36)[0],
-                "plane": struct.unpack_from("<I", b, o + 38)[0],
-                "flags": struct.unpack_from("<H", b, o + 51)[0],
+                "texture": tex,
+                "plane": pln,
+                "engflags": struct.unpack_from("<I", b, o + 42)[0],
+                "effects": effects,
+                "mirror": any(e[0].lower() == "mirror" for e in effects),
+                "flags": struct.unpack_from("<H", b, q)[0],
             }
+            o = q + 2
+        self._surfaces_end = o
 
     # ---- points, located rather than computed ----
     #
@@ -414,9 +444,9 @@ class Model:
         V = [struct.unpack_from("<3f", b, po + i * 24) for i in range(self.n_points)]
         P = [struct.unpack_from("<4f", b, self.plane_start + i * 16)
              for i in range(self.n_planes)]
-        S = [struct.unpack_from("<I", b, self.surface_start + j * self.SURFACE_SIZE + 38)[0]
-             for j in range(self.n_surfaces)]
-        o = self.surface_start + self.n_surfaces * self.SURFACE_SIZE
+        # The surface records are variable length (see surfaces()); walk them.
+        S = [s["plane"] for s in self.surfaces()]
+        o = self._surfaces_end
         out = []
         for i, nv in enumerate(self.poly_sizes):
             centre = struct.unpack_from("<3f", b, o)
@@ -473,17 +503,20 @@ class Model:
         VisBSP FAILS THIS IN EVERY WORLD and that is a known open problem -
         something sits between its planes and its surfaces. See the notes."""
         ti, pi = [], []
-        b = self.world.b
         # Resolves through plane_start, so a model whose planes had to be
-        # located is checked where they actually are.
-        if base is None:
-            base = self.surface_start
-        for i in range(self.n_surfaces):
-            o = base + i * self.SURFACE_SIZE
-            if o + self.SURFACE_SIZE > self.next:
-                return False
-            ti.append(struct.unpack_from("<H", b, o + 36)[0])
-            pi.append(struct.unpack_from("<I", b, o + 38)[0])
+        # located is checked where they actually are. The walk is the
+        # variable-length one in surfaces(); a record that steps past the
+        # model's end is a walk that has lost its footing.
+        if base is not None and base != self.surface_start:
+            return False
+        try:
+            for s_ in self.surfaces():
+                if s_["offset"] + 53 > self.next:
+                    return False
+                ti.append(s_["texture"])
+                pi.append(s_["plane"])
+        except struct.error:
+            return False
         if not ti:
             return False
         if set(ti) != set(range(len(self.textures))):

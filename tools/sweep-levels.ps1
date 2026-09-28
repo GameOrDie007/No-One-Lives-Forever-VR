@@ -70,6 +70,12 @@ param(
 $ErrorActionPreference = 'Stop'
 $Root = Split-Path $PSScriptRoot -Parent
 $Game = Join-Path $Root 'game'
+# NEVER KILL A GAME THIS SCRIPT DID NOT START. A running lithtech.exe is most
+# likely a player's session; stop and say so instead of closing it.
+if (Get-Process lithtech -ErrorAction SilentlyContinue) {
+    Write-Host '  STOPPED: the game is already running (a player may be in it). Close it first; nothing was touched.' -ForegroundColor Red
+    exit 1
+}
 # THE PLAYER'S SETTINGS ARE NOT THE DESK'S. The engine writes autoexec.cfg
 # when the game closes, and this harness closes it gracefully - so a run
 # that passed +soundenable 0 left the next headset session with the effects
@@ -97,8 +103,7 @@ Write-Host ("sweeping {0} worlds, {1} s timeout each" -f $worlds.Count, $Timeout
 # nothing and costs two seconds each time.
 $fakeLog = Join-Path $Root 'logs\fakehost-sweep.log'
 New-Item -ItemType Directory -Force (Split-Path $fakeLog) | Out-Null
-Get-Process lithtech -ErrorAction SilentlyContinue | ForEach-Object { try { $_.Kill() } catch {} }
-$fake = Start-Process -FilePath 'python' -ArgumentList @((Join-Path $PSScriptRoot 'fakehost.py')) `
+$fake = Start-Process -FilePath 'python' -ArgumentList @(('"' + (Join-Path $PSScriptRoot 'fakehost.py') + '"')) `
                       -PassThru -WindowStyle Minimized -RedirectStandardOutput $fakeLog
 Start-Sleep -Seconds 2
 if ($fake.HasExited) { throw "fake host exited immediately (exit $($fake.ExitCode))" }
@@ -112,6 +117,7 @@ $rez = @('NOLF.rez','NOLF2.rez','NOLFdll.rez','NOLFl.rez','custom',
 $rows = @()
 $csv  = Join-Path $Out 'summary.csv'
 $i = 0
+$p = $null
 # A sweep that stops on the first surprise is not a sweep. One level failing in
 # a way the harness did not anticipate must cost that level and nothing else,
 # so the per-level body runs non-fatally and records what went wrong.
@@ -119,6 +125,12 @@ $ErrorActionPreference = 'Continue'
 foreach ($w in $worlds) {
     $i++
   try {
+    # Any lithtech.exe but the previous level's own is one this script did
+    # not start - someone launched the game mid-run. Leave it alone.
+    if (Get-Process lithtech -ErrorAction SilentlyContinue | Where-Object { -not $p -or $_.Id -ne $p.Id }) {
+        Write-Host '  STOPPED: another lithtech.exe is running (a player may be in it). It was left alone; the sweep ends here.' -ForegroundColor Red
+        break
+    }
     # WORLDS/M01S01.DAT -> Worlds\M01S01, which is the form runworld wants.
     $short = ($w -replace '\.DAT$','') -replace '/','\'
     $name  = ($w -replace '.*[/\\]','') -replace '\.DAT$',''
@@ -241,7 +253,8 @@ foreach ($w in $worlds) {
         try { $p.CloseMainWindow() | Out-Null } catch {}
         Start-Sleep -Seconds 2
     }
-    Get-Process lithtech -ErrorAction SilentlyContinue | ForEach-Object { try { $_.Kill() } catch {} }
+    # Only the process this script started.
+    if (-not $p.HasExited) { try { $p.Kill() } catch {}; $p.WaitForExit(5000) | Out-Null }
     Start-Sleep -Milliseconds 800
 
     $dst = Join-Path $Out $tag
@@ -384,7 +397,7 @@ foreach ($w in $worlds) {
     $rows += [pscustomobject]@{ world=$short; name=$name; secs=''; loaded=$false
                                 note=("harness error: " + $_.Exception.Message) }
     $rows | Export-Csv $csv -NoTypeInformation -Encoding UTF8
-    Get-Process lithtech -ErrorAction SilentlyContinue | ForEach-Object { try { $_.Kill() } catch {} }
+    if ($p -and -not $p.HasExited) { try { $p.Kill() } catch {}; $p.WaitForExit(5000) | Out-Null }
   }
 }
 

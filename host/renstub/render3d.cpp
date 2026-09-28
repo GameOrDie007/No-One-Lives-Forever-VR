@@ -152,6 +152,15 @@ namespace
 	float  g_fEnvScale = 0.5f;
 	float  g_fEnvPan = 0.05f;
 	ID3D11Buffer* g_pCBEnv = nullptr;		// b6: camera right, up, position, pan/scale/flag
+	// CHROME ON MODELS (+StubModelEnv, +StubModelEnvScale100). The retail
+	// renderer drew the level's environment map (the client runs "EnvMap
+	// <file>" at every world load, Tex\Chrome.dtx unless the level names
+	// another) over every model flagged FLAG_ENVIRONMENTMAP, masked by the
+	// skin's alpha - the player's guns above all. Ours drew them flat.
+	int    g_nModelEnv = 1;
+	float  g_fModelEnvScale = 1.0f;
+	char   g_szModelEnv[128] = "";		// published by the client; "" = none
+	long   g_nModelEnvDraws = 0;
 	// b7: how far a WATER face's own texture has scrolled down, in repeats.
 	ID3D11Buffer* g_pCBWater = nullptr;
 	float g_fWaterFlow = 0.0f;		// texture repeats per second, downward
@@ -258,6 +267,7 @@ namespace
 	ID3D11ShaderResourceView* g_pBoxTex = nullptr;
 
 	int  g_nTargetW = 0, g_nTargetH = 0;
+	float g_fPxX = 1.0f, g_fPxY = 1.0f;		// target pixels per engine coordinate
 	uint32_t g_pBuiltFrom = 0;		// the world this vertex buffer was built from
 	// STAGE 2. The level's own .DAT, parsed beside the heap walk. It draws
 	// nothing yet: this exists so the file parse can be CHECKED against the
@@ -416,7 +426,7 @@ namespace
 	// culls ran against the SCOPE's camera, 40 units out at the gun, and a
 	// fresh shell casing a few units behind it was culled as "behind the
 	// camera" for the eyes too. The AK47 and the Hampton lost their casing
-	// flight (the headset, 22 September; the silenced SMG, no scope, kept it).
+	// flight.
 	// Culls use this; anything behind the eye is behind the scope as well.
 	float    g_fEyeCamPos[3] = { 0, 0, 0 };
 	float    g_fEyeCamQuat[4] = { 0, 0, 0, 1 };
@@ -496,6 +506,81 @@ namespace
 	VRScopeFrame g_Scope = {};
 	int g_bHaveScope = 0;
 	long g_nScopePasses = 0;
+	// ---- MIRRORS ----------------------------------------------------------
+	//
+	// A level marks a mirror with the brush effect "mirror overlay" (see
+	// WorldSurface). The retail renderer drew them through its portal path,
+	// gated by the DrawPortals console variable; this renderer draws them as a
+	// THIRD AND FOURTH WORLD PASS a frame, one per eye, into a texture of
+	// their own, and the mirror faces then wear that texture.
+	//
+	// THE REFLECTED WORLD, NOT A REFLECTED CAMERA. The pass uses the eye's own
+	// pose, field and frustum and prepends one reflection matrix R (world
+	// space, determinant -1) to the view-projection. That keeps the mirror
+	// texture in the SAME screen space as the eye, so the composite is a
+	// lookup by pixel position and needs no second matrix; reversed-Z, the
+	// asymmetric per-eye frustum and the moved-model fold are all untouched.
+	// What R does change is winding: every back-face cull must flip while
+	// the pass runs (the *Front rasterizer states).
+	//
+	// Only what is on the eye's side of the mirror may appear in it, or the
+	// inside of the wall behind the glass reflects into the room. The vertex
+	// shader clips against the mirror plane (SV_ClipDistance0, cbuffer MIR);
+	// outside a mirror pass the plane is (0,0,0,1) and clips nothing.
+	//
+	// Bounded: one mirror a frame - the nearest facing one whose batch box is
+	// inside the eye's view and within g_fMirrorRange - at g_fMirrorScale of
+	// the eye's size. +StubMirrors 0 turns the whole thing off and draws the
+	// faces as the plain glass they were.
+	int   g_bMirrors = 1;			// +StubMirrors
+	float g_fMirrorScale = 0.5f;	// +StubMirrorScale100
+	float g_fMirrorRange = 1500.0f;	// +StubMirrorRange, world units
+	int   g_bMirrorStereo = 1;		// +StubMirrorStereo 0: the left eye's picture for both
+	float g_fMirrorOverlay = 1.0f;	// +StubMirrorOverlay100: how much of the face's own texture lies over the reflection
+	int   g_bMirrorPass = 0;		// a mirror pass is running
+	int   g_nMirrorDebug = 0;		// +StubMirrorDebug 1: see PSMirror
+	int   g_nMirrorEye = 0;			// which eye's texture it draws into
+	float g_fMirrorR[16];			// the reflection, row-vector form
+	float g_fMirrorPlaneLive[4];	// the plane the pass reflects in (live, n.p = d)
+	int   g_bMirrorThisFrame[2] = { 0, 0 };	// a mirror texture is valid for this eye this frame
+	// THE FACE THAT REFLECTION WAS MADE FOR (a batch index), per eye. Only that
+	// face may show it: the picture was drawn across its plane, so laid on
+	// any other mirror in view it would be the wrong room. Every other mirror
+	// face - and every one seen INSIDE a reflection - is plain glass.
+	int   g_nMirrorBatch[2] = { -1, -1 };
+	// THE LAST POSE EACH EYE SAW THE WORLD FROM, for the pause menu's world
+	// (see R3D_DrawWorld) and for the mirror under it (R3D_PausedWorldPose).
+	float s_fWPos[2][3], s_fWQuat[2][4], s_fWTan[2][4];
+	float s_fWFov[2][2], s_fWNear[2], s_fWFar[2];
+	int   s_bWCam[2] = { 0, 0 }, s_bWTan[2] = { 0, 0 };
+	long  g_nMirrorCompBatch = -1;			// the face composited in the current pass
+	long  g_nMirrorPasses = 0, g_nMirrorFrames = 0, g_nMirrorComposites = 0;
+	long  g_nMirrorFaces = 0;		// faces tagged at world build
+	int   g_nMirrorTexW = 0, g_nMirrorTexH = 0;
+	ID3D11Texture2D*          g_pMirrorTex[2] = { nullptr, nullptr };
+	ID3D11RenderTargetView*   g_pMirrorRTV[2] = { nullptr, nullptr };
+	ID3D11ShaderResourceView* g_pMirrorSRV[2] = { nullptr, nullptr };
+	ID3D11Texture2D*          g_pMirrorDS  = nullptr;
+	ID3D11DepthStencilView*   g_pMirrorDSV = nullptr;
+	ID3D11PixelShader*        g_pPSMirror  = nullptr;
+	ID3D11Buffer*             g_pCBMir     = nullptr;		// cbuffer MIR, b8
+	ID3D11RasterizerState*    g_pRSWorldCullFront = nullptr;	// the cull-back states, flipped for the pass
+	ID3D11RasterizerState*    g_pRSWaterFront = nullptr;
+	// Which eye and rect the composite samples: set by the eye pass.
+	float g_fMirVp[4] = { 0, 0, 1, 1 };
+	float g_fMirrorCentreDbg[3] = { 0, 0, 0 };	// the chosen face's live centre, for +StubMirrorDebug
+	// Write cbuffer MIR: the clip plane, the viewport (x, y, 1/w, 1/h), the
+	// overlay strength and whether a reflection exists.
+	void WriteMirCB(const float* pClip, const float* pVp, float fOverlay, float fHave)
+	{
+		if (!g_pCBMir || !g_pCtx) return;
+		float m[12] = { 0, 0, 0, 1,  0, 0, 1, 1,  fOverlay, fHave, (float)g_nMirrorDebug, 0 };
+		if (pClip) memcpy(m, pClip, 16);
+		if (pVp)   memcpy(m + 4, pVp, 16);
+		D3D11_MAPPED_SUBRESOURCE ms{};
+		if (SUCCEEDED(g_pCtx->Map(g_pCBMir, 0, D3D11_MAP_WRITE_DISCARD, 0, &ms)))
+		{ memcpy(ms.pData, m, sizeof m); g_pCtx->Unmap(g_pCBMir, 0); }
+	}
 	int  g_nMsaaMade = 0;		// what we actually got, after support checks
 	// +StubMsaaClear 1 clears the multisampled target to MAGENTA at the first
 	// world pass of each frame. Nothing in this game is magenta, so whatever
@@ -786,7 +871,18 @@ static void SetAlphaCut(float f)
 				   // black square over the stars.
 				   bool bSkyAdd;
 				   // A SKY BRUSH DRAWN DEPTH-ONLY. See g_bSkyOccluder.
-				   bool bOcc; };
+				   bool bOcc;
+				   // A MIRROR FACE (the level's "mirror overlay" effect). Its
+				   // vertices sit in the buffer like any other batch; the draw
+				   // loop leaves it out of the opaque pass and draws it after,
+				   // with the reflection texture. See g_Mirrors.
+				   bool bMirror;
+				   float fMirPlane[4];		// authored plane, n.p = d
+				   float fMirCentre[3];	// the face's centre, authored
+				   // Its texture's alpha was ALL ZERO and the loader made it
+				   // opaque (Dtx's zero-alpha rule). For a mirror's glass that
+				   // zero meant "all reflection": see the composite.
+				   bool bZeroAlphaTex; };
 	std::vector<Batch> g_Batches;
 	// THE WORLD ON THE CPU, FOR A RAY. The client's IntersectSegment reaches
 	// world models by their BOX only - the intro's whole street is one
@@ -850,6 +946,8 @@ static void SetAlphaCut(float f)
 	// there and never darkens it, which is why dark art is the right
 	// art for one - and why drawing it with alpha makes a black blob.
 	ID3D11BlendState*        g_pBlendAdd = nullptr;
+	// ONE / SRC_ALPHA: the model chrome's lerp (see the shader's envp.x = 2).
+	ID3D11BlendState*        g_pBlendEnvLerp = nullptr;
 	ID3D11BlendState*        g_pBlendMod2x = nullptr;
 	// Additive scaled by the source alpha, for SPRITES. See the note where it
 	// is created. +StubSprAddMod 0 uses the flat ONE/ONE state instead.
@@ -1394,7 +1492,7 @@ static void SetAlphaCut(float f)
 					 // gun cannot be left out of the build (the eyes lost it, headset
 					 // 21 September); each run says whose it is and the scope pass
 					 // skips the view model's at draw time.
-					 int nView;
+					 int nView;			// 1 the view weapon, 2 the player's body for mirrors, 3 the player's body for the eyes
 					 // The light this instance stands in. Part of the coalesce
 					 // key: two models sharing a skin but standing in different
 					 // rooms are not one run.
@@ -1402,7 +1500,13 @@ static void SetAlphaCut(float f)
 					 // WHICH BUFFER the run's nStart indexes: 0 the per-frame
 					 // ring (g_pMeshVB, at this frame's region), 1 the resident
 					 // pool (g_pPoolVB) that unchanged instances are drawn from.
-					 int nVB; };
+					 int nVB;
+					 // 1: an environment-mapped model (the player's gun, a
+					 // vehicle): its chrome is drawn over it. See ModelEnvDraw.
+					 int nEnv;
+					 // Index into g_MLSets: the lamps on this run's model this
+					 // frame, or -1. Set every frame, cached runs included.
+					 int nLSet; };
 	std::vector<MeshRun> g_MeshRuns;
 
 	// ---- THE MODEL LIGHT GRID ------------------------------------------
@@ -1584,6 +1688,14 @@ static void SetAlphaCut(float f)
 	// +StubLightDirect 0 turns it off; +StubLightGain100 scales the sum.
 	int   g_bLightDirect = 1;
 	float g_fLightGain = 1.0f;
+	// +StubModelLightDir: the lamps per model, lit by direction (1), or the
+	// old flat sum (0). See the shader's MLT buffer.
+	int   g_bModelLightDir = 1;
+	struct ModelLightSet { float p[4][4]; float c[4][4]; int n; float ctr[3]; };
+	std::vector<ModelLightSet> g_MLSets;		// this frame's, indexed by MeshRun::nLSet
+	ID3D11Buffer* g_pCBMdlLights = nullptr;	// b3
+	int   g_nMLSetBound = -2;					// which set b3 holds
+	long  g_nMLSetLit = 0, g_nMLSetDark = 0;
 	long  g_nLightDirectHits = 0, g_nLightDirectInst = 0;
 	void LightDirectAt(const float* pPos, float* pInOut)
 	{
@@ -1626,6 +1738,54 @@ static void SetAlphaCut(float f)
 			if (d3[k] > 1.0f) d3[k] = 1.0f;
 			if (d3[k] > pInOut[k]) pInOut[k] = d3[k];
 		}
+	}
+
+	// THE LAMPS THAT REACH A MODEL, strongest at its centre first, at most
+	// four: the level's light objects that light objects, and the dynamic
+	// ones. Returns its index in g_MLSets, or -1 when none reaches it.
+	int ModelLightSetFor(const float* pPos)
+	{
+		if (!g_bModelLightDir || !g_bLightDirect || !g_pWorldFile) return -1;
+		struct Cand { float p[4]; float c[3]; float f; };
+		Cand best[4]; int nBest = 0;
+		auto Offer = [&](const float* lp, float r, const float* rgb, float fScale)
+		{
+			if (r <= 1.0f) return;
+			const float dx = pPos[0] - lp[0], dy = pPos[1] - lp[1], dz = pPos[2] - lp[2];
+			const float d2 = dx*dx + dy*dy + dz*dz;
+			if (d2 >= r * r) return;
+			Cand c;
+			c.p[0] = lp[0]; c.p[1] = lp[1]; c.p[2] = lp[2]; c.p[3] = r;
+			c.c[0] = rgb[0] * fScale; c.c[1] = rgb[1] * fScale; c.c[2] = rgb[2] * fScale;
+			const float fMax = (c.c[0] > c.c[1]) ? ((c.c[0] > c.c[2]) ? c.c[0] : c.c[2]) : ((c.c[1] > c.c[2]) ? c.c[1] : c.c[2]);
+			c.f = (1.0f - sqrtf(d2) / r) * fMax;
+			if (c.f <= 0.002f) return;
+			int at = nBest;
+			while (at > 0 && best[at - 1].f < c.f) --at;
+			if (at >= 4) return;
+			for (int k = (nBest < 4 ? nBest : 3); k > at; --k) best[k] = best[k - 1];
+			best[at] = c;
+			if (nBest < 4) ++nBest;
+		};
+		const std::vector<WorldLight>& L = g_pWorldFile->Lights;
+		for (size_t i = 0; i < L.size(); ++i)
+			if (L[i].bObjects) Offer(L[i].fPos, L[i].fRadius, L[i].fRGB, L[i].fBright * g_fLightGain);
+		if (g_bDynLights && g_bHaveDynL)
+			for (uint32_t i = 0; i < g_DynL.nCount; ++i)
+				if (g_DynL.lights[i].nFlags & VRLIGHT_F_OBJECTS)
+					Offer(g_DynL.lights[i].fPos, g_DynL.lights[i].fRadius, g_DynL.lights[i].fColour, g_fLightGain);
+		if (!nBest) { ++g_nMLSetDark; return -1; }
+		++g_nMLSetLit;
+		ModelLightSet ls{};
+		for (int k = 0; k < nBest; ++k)
+		{
+			for (int q = 0; q < 4; ++q) ls.p[k][q] = best[k].p[q];
+			for (int q = 0; q < 3; ++q) ls.c[k][q] = best[k].c[q];
+		}
+		ls.n = nBest;
+		ls.ctr[0] = pPos[0]; ls.ctr[1] = pPos[1]; ls.ctr[2] = pPos[2];
+		g_MLSets.push_back(ls);
+		return (int)g_MLSets.size() - 1;
 	}
 
 	void LGridBegin(const float* pMin, const float* pMax)
@@ -2221,6 +2381,11 @@ static void SetAlphaCut(float f)
 	// +StubBody / +StubHideHead. Draw the player's own model, minus the
 	// head you are looking out of.
 	int  g_bDrawBody = 0;
+	// +StubMirrorBody 1: the player's own body in MIRRORS, head and all - and
+	// only there. Its runs are built with everyone else's (once a frame, shared
+	// by every pass) and tagged nView 2, and only a mirror pass draws them.
+	int  g_bMirrorBody = 0;
+	long g_nBodyArmTris = 0;		// first-person body triangles dropped as arms
 	int  g_bHideHead = 1;
 	long g_nHeadHidden = 0;
 	long g_nViewArmsHidden = 0;
@@ -3147,6 +3312,11 @@ static int PieceSkinSlot(const char* s)
 		// The eight nearest dynamic lights of this pass: dlp.xyz position,
 		// dlp.w radius, dlc.rgb colour, dln.x how many.
 		"cbuffer DYN : register(b4) { float4 dlp[8]; float4 dlc[8]; float4 dln; };\n"
+		// THE LAMPS ON THIS MODEL (mlight.w = 2): up to four of the level's
+		// lights (and dynamic ones) that reach it, strongest first - mlp.xyz
+		// position, mlp.w radius, mlc.rgb colour already times its brightness,
+		// mln.x how many. See ModelLightSetFor.
+		"cbuffer MLT : register(b3) { float4 mlp[4]; float4 mlc[4]; float4 mln; };\n"
 		"Texture2D    tex0 : register(t0);\n"
 		"Texture2D    lmap : register(t1);\n"
 		// The level's light grid: gmin.xyz is its origin, ginv.xyz one over
@@ -3163,12 +3333,23 @@ static int PieceSkinSlot(const char* s)
 		// position, envp.xy the pan, envp.z the scale, envp.w 1 during the pass.
 		"cbuffer ENV : register(b6) { float4 envr; float4 envu; float4 envc; float4 envp; };\n"
 		"Texture3D    lgrid : register(t2);\n"
+		// THE MIRROR. mirclip is the mirror plane during a mirror pass - a
+		// vertex on the far side of it is clipped, so the wall behind the
+		// glass never reflects into the room - and (0,0,0,1) otherwise, which
+		// clips nothing. mirvp is the eye's viewport (x, y, 1/w, 1/h): the
+		// reflection was drawn in the eye's own screen space, so a mirror
+		// face samples it by pixel position. mirp.x is how much of the face's
+		// own texture lies over the reflection; mirp.y is 1 when a reflection
+		// exists for this eye this frame.
+		"cbuffer MIR : register(b8) { float4 mirclip; float4 mirvp; float4 mirp; };\n"
+		"Texture2D    mirt : register(t3);\n"
 		"SamplerState samp : register(s0);\n"
 		"struct VSIn  { float3 pos : POSITION; float3 nrm : NORMAL;"
 		"               float2 uv : TEXCOORD0; float2 luv : TEXCOORD1; };\n"
 		"struct VSOut { float4 pos : SV_POSITION; float3 nrm : NORMAL;"
 		"               float2 uv : TEXCOORD0; float2 luv : TEXCOORD1;"
-		"               float fogz : TEXCOORD2; float3 wp : TEXCOORD3; };\n"
+		"               float fogz : TEXCOORD2; float3 wp : TEXCOORD3;"
+		"               float clip : SV_ClipDistance0; };\n"
 		"VSOut VSMain(VSIn i) {\n"
 		"  VSOut o; o.pos = mul(float4(i.pos, 1.0f), mvp); o.nrm = i.nrm;\n"
 		"  o.uv = i.uv + float2(0.0f, wat.x); o.luv = i.luv; o.wp = i.pos;\n"
@@ -3176,6 +3357,8 @@ static int PieceSkinSlot(const char* s)
 		// w. No second transform and no extra matrix: this is the same number
 		// the hardware divides by.
 		"  o.fogz = o.pos.w;\n"
+		// The clip is taken on the UNREFLECTED position: keep the eye's side.
+		"  o.clip = dot(float4(i.pos, 1.0f), mirclip);\n"
 		"  return o;\n"
 		"}\n"
 		// The lightmap where there is one, and the old stand-in normal shade
@@ -3230,6 +3413,29 @@ static int PieceSkinSlot(const char* s)
 		"    if (mlight.w > 0.5f) {\n"
 		"      l = mlight.rgb * lmp.x"
 		"          * (0.65f + 0.35f * saturate(dot(normalize(i.nrm), d)));\n"
+		// LIT FROM THE SIDE THE LAMPS ARE ON. Each lamp's strength is taken
+		// ONCE, at the model's centre (mln.yzw), the way the retail engine lit
+		// a model - not per pixel: a lamp's falloff measured across the body
+		// put a bright patch on whatever part was nearest it, which slid over
+		// a character as she moved and read as a glossy shine. The brightness
+		// is the flat light's (mlight.rgb, lamps included), so a model is as
+		// bright as before; only the shading's direction comes from the lamps,
+		// weighted by their strength, with the rest of the room's light from
+		// the old fixed direction. Same 0.65..1.0 range as without lamps.
+		"      if (mlight.w > 1.5f) {\n"
+		"        float3 nn = normalize(i.nrm); float ws = 0.0f, sh = 0.0f;\n"
+		"        [unroll] for (int k = 0; k < 4; ++k) {\n"
+		"          if (k < (int)mln.x) {\n"
+		"            float3 dv = mlp[k].xyz - mln.yzw; float dd = length(dv);\n"
+		"            float w = dot(mlc[k].rgb, 0.3333f) * saturate(1.0f - dd / mlp[k].w);\n"
+		"            sh += w * saturate(dot(nn, dv / max(dd, 1e-3f))); ws += w;\n"
+		"          }\n"
+		"        }\n"
+		"        float wg = max(dot(mlight.rgb, 0.3333f) - ws, 0.0f);\n"
+		"        sh += wg * saturate(dot(nn, d)); ws += wg;\n"
+		"        float shp = (ws > 1e-4f) ? sh / ws : saturate(dot(nn, d));\n"
+		"        l = mlight.rgb * lmp.x * (0.65f + 0.35f * shp);\n"
+		"      }\n"
 		"    } else {\n"
 				"    // NO abs(). It made brightness rise on BOTH sides of\n"
 		"    // perpendicular, so a smoothly curving surface got a hard V\n"
@@ -3257,7 +3463,11 @@ static int PieceSkinSlot(const char* s)
 		// surface's own frame from its normal: t along it, b up it; the map is
 		// a planar texture in that frame, envr.w and envu.w repeats per unit,
 		// and envp.y runs it down the face.
-		"    float3 n = normalize(cross(ddx(i.wp), ddy(i.wp)));\n"
+		// A MODEL (envp.x = 2) has real vertex normals and uses them: a face
+		// normal from the derivatives is flat per triangle, and a gun's barrel
+		// would reflect in facets.
+		"    float3 n = (envp.x > 1.5f) ? normalize(i.nrm)\n"
+		"                               : normalize(cross(ddx(i.wp), ddy(i.wp)));\n"
 		// ONLY A STANDING FACE - the waterfall. On the pool's flat top the same
 		// map drew as bright stripes running away from the eye and hid the
 		// grid's own wave. The flat water keeps its
@@ -3280,7 +3490,7 @@ static int PieceSkinSlot(const char* s)
 		"    float3 rr = reflect(v, n);\n"
 		"    euv = float2(dot(rr, envr.xyz), -dot(rr, envu.xyz)) * 0.5f + 0.5f;\n"
 		// envp.x: 1 for WATER only - the flowing pan, and standing faces only.
-		"    if (envp.x > 0.5f) {\n"
+		"    if (envp.x > 0.5f && envp.x < 1.5f) {\n"
 		// A FLAT FACE IS FLAT BY ITS OWN HEIGHT, NOT BY A DERIVED NORMAL. The
 		// normal above comes from the screen-space derivatives of the world
 		// position, and at the far edge of the Dive's sea - a 15000-unit face
@@ -3344,6 +3554,20 @@ static int PieceSkinSlot(const char* s)
 		//
 		// WATER IS NOT THIS BRANCH. It returns above, through the modulate-2x
 		// path, and is untouched.
+		// CHROME ON A MODEL (envp.x = 2): the gun's shine. The skin is bound at
+		// t1 for this pass, and ONE MINUS its alpha is how much of the map each
+		// texel shows: every player-view skin is near 255 on wood, cloth and
+		// hands and a little lower on metal (the Dragunov's steel 209-250, the
+		// Walther's down to 117), which is the D3D7 blend-by-texture-alpha the
+		// retail renderer did - picture where alpha is 1, map where it is 0.
+		// The pass blends ONE / SRC_ALPHA, so returning (map x w, 1 - w) is that
+		// lerp over the skin already drawn. envp.z scales w (1 = retail). Lit by
+		// the light the model stands in, like the world's sheen above, so a gun
+		// in a dark room does not glow.
+		"    if (envp.x > 1.5f) {\n"
+		"      float w = saturate((1.0f - lmap.Sample(samp, i.uv).a) * envp.z);\n"
+		"      return float4(e * w * saturate(SurfaceLight(i)), 1.0f - w);\n"
+		"    }\n"
 		"    return float4(e * envp.z * saturate(SurfaceLight(i)), 1.0f);\n"
 		"  }\n"
 		"  if (lmp.y > 1.5f && lmp.y < 2.5f)\n"
@@ -3437,6 +3661,30 @@ static int PieceSkinSlot(const char* s)
 		"    outc = lerp(fogc.rgb, outc, fz);\n"
 		"  }\n"
 		"  return float4(outc, lmp.w * t0.a);\n"
+		"}\n"
+		// A MIRROR FACE: the reflection this eye drew, looked up by pixel
+		// position, with the face's own lit texture laid over it by its alpha
+		// (the level's "overlay"). With no reflection this frame the face is
+		// its texture alone, which is the picture the pass replaces.
+		"float4 PSMirror(VSOut i) : SV_TARGET {\n"
+		"  float4 t0 = tex0.Sample(samp, i.uv);\n"
+		"  float3 own = t0.rgb * SurfaceLight(i);\n"
+		// +StubMirrorDebug 1 (mirp.z): half the reflection, half a verdict -
+		// green when a reflection was declared for this eye, red when not.
+		// A NEGATIVE +StubMirrorDebug: the coordinate the face samples, as
+		// colour (red across, green down), to check the lookup itself.
+		"  if (mirp.z < -0.5f) return float4(saturate((i.pos.xy - mirvp.xy) * mirvp.zw), 0.0f, 1.0f);\n"
+		"  if (mirp.z > 0.5f) return float4(0.5f * mirt.Sample(samp, saturate((i.pos.xy - mirvp.xy) * mirvp.zw)).rgb"
+		"      + (mirp.y > 0.5f ? float3(0.0f, 0.5f, 0.0f) : float3(0.5f, 0.0f, 0.0f)), 1.0f);\n"
+		"  if (mirp.y < 0.5f) return float4(own, 1.0f);\n"
+		"  float2 suv = (i.pos.xy - mirvp.xy) * mirvp.zw;\n"
+		"  float3 refl = mirt.Sample(samp, saturate(suv)).rgb;\n"
+		"  float3 outc = lerp(refl, own, saturate(t0.a * mirp.x));\n"
+		"  if (fogc.w > 0.5f) {\n"
+		"    float fz = saturate((fogp.y - i.fogz) / max(fogp.y - fogp.x, 1.0f));\n"
+		"    outc = lerp(fogc.rgb, outc, fz);\n"
+		"  }\n"
+		"  return float4(outc, 1.0f);\n"
 		"}\n";
 
 	bool Compile(const char* pszEntry, const char* pszModel, ID3DBlob** ppOut)
@@ -3479,6 +3727,18 @@ bool R3D_Create(ID3D11Device* pDev, ID3D11DeviceContext* pCtx, R3D_LogFn pfnLog)
 	hr = pDev->CreatePixelShader(pPS->GetBufferPointer(),
 								 pPS->GetBufferSize(), nullptr, &g_pPS);
 	Log("  R3D: CreatePixelShader hr=%08X", (unsigned)hr);
+	// The mirror face's shader. Optional: without it the faces draw as
+	// plain glass and the mirror pass is never run.
+	{
+		ID3DBlob* pPM = nullptr;
+		if (Compile("PSMirror", "ps_4_0", &pPM))
+		{
+			hr = pDev->CreatePixelShader(pPM->GetBufferPointer(),
+										 pPM->GetBufferSize(), nullptr, &g_pPSMirror);
+			Log("  R3D: mirror pixel shader hr=%08X", (unsigned)hr);
+			pPM->Release();
+		}
+	}
 
 	const D3D11_INPUT_ELEMENT_DESC kIL[] = {
 		{ "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0,  D3D11_INPUT_PER_VERTEX_DATA, 0 },
@@ -3518,6 +3778,11 @@ bool R3D_Create(ID3D11Device* pDev, ID3D11DeviceContext* pCtx, R3D_LogFn pfnLog)
 		cbd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
 		cbd.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
 		hr = pDev->CreateBuffer(&cbd, nullptr, &g_pCBDyn);
+		{
+			D3D11_BUFFER_DESC mb = cbd;
+			mb.ByteWidth = 9 * 16;		// mlp[4], mlc[4], mln
+			pDev->CreateBuffer(&mb, nullptr, &g_pCBMdlLights);
+		}
 		Log("  R3D: dynamic-light constant buffer hr=%08X", (unsigned)hr);
 	}
 	{
@@ -3544,6 +3809,14 @@ bool R3D_Create(ID3D11Device* pDev, ID3D11DeviceContext* pCtx, R3D_LogFn pfnLog)
 		cbw.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
 		hr = pDev->CreateBuffer(&cbw, nullptr, &g_pCBWater);
 		Log("  R3D: water-flow constant buffer hr=%08X", (unsigned)hr);
+		// b8: the mirror plane, viewport and overlay (see cbuffer MIR).
+		// Initialised to "clip nothing, no reflection", so every pass that
+		// is not a mirror pass reads a plane that never rejects a vertex.
+		cbw.ByteWidth = 48;
+		const float kMirInit[12] = { 0, 0, 0, 1,  0, 0, 1, 1,  1, 0, 0, 0 };
+		D3D11_SUBRESOURCE_DATA mid = { kMirInit, 0, 0 };
+		hr = pDev->CreateBuffer(&cbw, &mid, &g_pCBMir);
+		Log("  R3D: mirror constant buffer hr=%08X", (unsigned)hr);
 	}
 	Log("  R3D: model-light constant buffer hr=%08X", (unsigned)hr);
 
@@ -3614,6 +3887,16 @@ bool R3D_Create(ID3D11Device* pDev, ID3D11DeviceContext* pCtx, R3D_LogFn pfnLog)
 		ba.RenderTarget[0].SrcBlend  = D3D11_BLEND_ONE;
 		ba.RenderTarget[0].DestBlend = D3D11_BLEND_ONE;
 		hr = pDev->CreateBlendState(&ba, &g_pBlendAdd);
+		// Model chrome: dest x src.alpha + src, the shader supplying both
+		// halves of a lerp. The target's alpha is left as it was.
+		{
+			D3D11_BLEND_DESC be = ba;
+			be.RenderTarget[0].SrcBlend       = D3D11_BLEND_ONE;
+			be.RenderTarget[0].DestBlend      = D3D11_BLEND_SRC_ALPHA;
+			be.RenderTarget[0].SrcBlendAlpha  = D3D11_BLEND_ZERO;
+			be.RenderTarget[0].DestBlendAlpha = D3D11_BLEND_ONE;
+			pDev->CreateBlendState(&be, &g_pBlendEnvLerp);
+		}
 		// Modulate 2x, for water's reflection map: 2 * src * dest.
 		ba.RenderTarget[0].SrcBlend  = D3D11_BLEND_DEST_COLOR;
 		ba.RenderTarget[0].DestBlend = D3D11_BLEND_SRC_COLOR;
@@ -3691,6 +3974,14 @@ bool R3D_Create(ID3D11Device* pDev, ID3D11DeviceContext* pCtx, R3D_LogFn pfnLog)
 		D3D11_RASTERIZER_DESC rc = rs;
 		rc.CullMode = D3D11_CULL_BACK;
 		pDev->CreateRasterizerState(&rc, &g_pRSWorldCull);
+		// THE SAME TWO WITH THE CULL FLIPPED, for the mirror pass: a
+		// reflection reverses every triangle's winding, so "cull back" has
+		// to cull FRONT there or the water and the world models vanish from
+		// the glass.
+		rw.CullMode = D3D11_CULL_FRONT;
+		pDev->CreateRasterizerState(&rw, &g_pRSWaterFront);
+		rc.CullMode = D3D11_CULL_FRONT;
+		pDev->CreateRasterizerState(&rc, &g_pRSWorldCullFront);
 		Log("  R3D: rasterizer (cull back, for water, depth bias %d slope %.3f) hr=%08X",
 			g_nWaterBias, (float)g_nWaterBias / 250.0f, (unsigned)hr);
 	}
@@ -4054,6 +4345,18 @@ void R3D_Destroy()
 	if (g_pScopeTex) { g_pScopeTex->Release(); g_pScopeTex = nullptr; }
 	if (g_pScopeDSV) { g_pScopeDSV->Release(); g_pScopeDSV = nullptr; }
 	if (g_pScopeDS)  { g_pScopeDS->Release();  g_pScopeDS  = nullptr; }
+	// The mirror pass's targets, made on first use like the scope's.
+	for (int e = 0; e < 2; ++e)
+	{
+		if (g_pMirrorSRV[e]) { g_pMirrorSRV[e]->Release(); g_pMirrorSRV[e] = nullptr; }
+		if (g_pMirrorRTV[e]) { g_pMirrorRTV[e]->Release(); g_pMirrorRTV[e] = nullptr; }
+		if (g_pMirrorTex[e]) { g_pMirrorTex[e]->Release(); g_pMirrorTex[e] = nullptr; }
+	}
+	if (g_pMirrorDSV) { g_pMirrorDSV->Release(); g_pMirrorDSV = nullptr; }
+	if (g_pMirrorDS)  { g_pMirrorDS->Release();  g_pMirrorDS  = nullptr; }
+	g_nMirrorTexW = g_nMirrorTexH = 0;
+	g_bMirrorThisFrame[0] = g_bMirrorThisFrame[1] = 0;
+	g_nMirrorBatch[0] = g_nMirrorBatch[1] = -1;
 	ReleaseLateBuffers();
 	g_nTargetW = 0; g_nTargetH = 0; g_nMsaaMade = 1;
 	if (g_pVB)  { g_pVB->Release();  g_pVB  = nullptr; }
@@ -4061,9 +4364,14 @@ void R3D_Destroy()
 	if (g_pCBFog) { g_pCBFog->Release(); g_pCBFog = nullptr; }
 	if (g_pCBMdl) { g_pCBMdl->Release(); g_pCBMdl = nullptr; }
 	if (g_pCBDyn) { g_pCBDyn->Release(); g_pCBDyn = nullptr; }
+	if (g_pCBMdlLights) { g_pCBMdlLights->Release(); g_pCBMdlLights = nullptr; }
 	if (g_pCBGrid) { g_pCBGrid->Release(); g_pCBGrid = nullptr; }
 	if (g_pCBEnv) { g_pCBEnv->Release(); g_pCBEnv = nullptr; }
 	if (g_pCBWater) { g_pCBWater->Release(); g_pCBWater = nullptr; }
+	if (g_pCBMir) { g_pCBMir->Release(); g_pCBMir = nullptr; }
+	if (g_pPSMirror) { g_pPSMirror->Release(); g_pPSMirror = nullptr; }
+	if (g_pRSWorldCullFront) { g_pRSWorldCullFront->Release(); g_pRSWorldCullFront = nullptr; }
+	if (g_pRSWaterFront) { g_pRSWaterFront->Release(); g_pRSWaterFront = nullptr; }
 	// THE ENV MAP CACHE HOLDS BORROWED VIEWS. Dtx_Get's views belong to the
 	// DTX cache and Dtx_Flush (below) releases them; releasing them here as
 	// well was a double release, and the second one crashed the renderer's
@@ -4102,6 +4410,7 @@ void R3D_Destroy()
 	ReleaseCtx1();
 	// Small, but they were leaking on exactly the same path.
 	if (g_pBlendAdd) { g_pBlendAdd->Release(); g_pBlendAdd = nullptr; }
+	if (g_pBlendEnvLerp) { g_pBlendEnvLerp->Release(); g_pBlendEnvLerp = nullptr; }
 	if (g_pBlendMod2x) { g_pBlendMod2x->Release(); g_pBlendMod2x = nullptr; }
 	if (g_pBlendMul) { g_pBlendMul->Release(); g_pBlendMul = nullptr; }
 	if (g_pDSSRev)   { g_pDSSRev->Release();   g_pDSSRev   = nullptr; }
@@ -4137,6 +4446,12 @@ void R3D_Destroy()
 	g_pDev = nullptr;
 	g_pCtx = nullptr;
 	LogAddressSpace("renderer teardown - AFTER");
+}
+
+void R3D_SetScale(float fX, float fY)
+{
+	g_fPxX = (fX > 0.0f) ? fX : 1.0f;
+	g_fPxY = (fY > 0.0f) ? fY : 1.0f;
 }
 
 void R3D_SetTarget(ID3D11RenderTargetView* pRTV, int nW, int nH)
@@ -5318,7 +5633,7 @@ static void LoadWorldFile(uint32_t pWorld)
 		Log("  DTX: cache flushed at the world walk (%s)", "new world");
 	}
 	// The model runs standing now were built for the world being replaced.
-	g_MeshRuns.clear();
+	g_MeshRuns.clear(); g_MLSets.clear(); g_nMLSetBound = -2;
 	g_bMeshInvalidate = true;
 	for (size_t i = 0; i < g_pWorldFile->Models.size(); ++i)
 		g_FileByName[g_pWorldFile->Models[i].sName] = i;
@@ -5588,6 +5903,14 @@ static void R3D_BuildWorldInner(uint32_t pWorld)
 	std::vector< std::vector<Vtx> > transBuckets;
 	transBuckets.resize(1);
 	g_nTransPolys = 0;
+	// MIRROR FACES: one bucket per (world model, plane, texture). Whatever
+	// model they come from - a door, a translucent brush, the BSP - they
+	// leave the ordinary buckets, so the opaque and glass passes never draw
+	// them and the composite can. See g_bMirrors.
+	struct MirBucket { uint32_t tx; uint32_t pSub; float pl[4]; std::string sFile;
+					   std::vector<Vtx> v; double c[3]; };
+	std::vector<MirBucket> mirBuckets;
+	g_nMirrorFaces = 0;
 	int nModels = 0, nNoTex = 0, nLit = 0;
 	// WHO FELL TO THE LIGHT GRID, by model. The 12 September batch showed the
 	// grid's stand-in wrong where its cells are coarse or coloured - the
@@ -6043,6 +6366,27 @@ static void R3D_BuildWorldInner(uint32_t pWorld)
 					if (si < fileSurf.size()
 						&& fileSurf[si].nFlags == g_nMarkerFlags)
 					{ ++g_nMarkerSkipped; ++nMarkerFlagPolys; if (bSkyModel) ++nSkyWhere[3]; continue; }
+				}
+			}
+
+			// A MIRROR FACE: its FILE surface carries the "mirror" effect (see
+			// WorldSurface). Routed to its own bucket below.
+			bool bMirrorPoly = false;
+			float fMirPl[4] = { 0, 0, 0, 0 };
+			std::string sMirFile;
+			if (g_bMirrors && bBridgeOK && !fileSurf.empty())
+			{
+				const uint32_t sfm = Word(po, kPolySurface);
+				if (sfm >= nSurfBase)
+				{
+					const uint32_t si = (sfm - nSurfBase) / nSurfStride;
+					if (si < fileSurf.size() && fileSurf[si].bMirror)
+					{
+						bMirrorPoly = true;
+						memcpy(fMirPl, fileSurf[si].fPlane, sizeof fMirPl);
+						if (fileTex && fileSurf[si].nTexture < fileTex->size())
+							sMirFile = (*fileTex)[fileSurf[si].nTexture];
+					}
 				}
 			}
 
@@ -6805,7 +7149,30 @@ static void R3D_BuildWorldInner(uint32_t pWorld)
 					{ v.nx = vc[idx[k]][0]; v.ny = vc[idx[k]][1]; v.nz = vc[idx[k]][2]; }
 					v.u = uv[idx[k]][0]; v.v = uv[idx[k]][1];
 					v.lu = lm[idx[k]][0]; v.lv = lm[idx[k]][1];
-					if (bSkyModel)        skyBuckets[nBucket].push_back(v);
+					if (bMirrorPoly)
+					{
+						// One bucket per (world model, plane, texture).
+						size_t m = 0;
+						for (; m < mirBuckets.size(); ++m)
+						{
+							const MirBucket& mb = mirBuckets[m];
+							if (mb.tx == tx && mb.pSub == nSubKey
+								&& mb.pl[0]*fMirPl[0] + mb.pl[1]*fMirPl[1] + mb.pl[2]*fMirPl[2] > 0.999f
+								&& fabsf(mb.pl[3] - fMirPl[3]) < 0.5f) break;
+						}
+						if (m == mirBuckets.size())
+						{
+							MirBucket nb;
+							nb.tx = tx; nb.pSub = nSubKey;
+							memcpy(nb.pl, fMirPl, sizeof nb.pl);
+							if (!tx) nb.sFile = sMirFile;
+							nb.c[0] = nb.c[1] = nb.c[2] = 0.0;
+							mirBuckets.push_back(nb);
+						}
+						mirBuckets[m].v.push_back(v);
+						mirBuckets[m].c[0] += v.x; mirBuckets[m].c[1] += v.y; mirBuckets[m].c[2] += v.z;
+					}
+					else if (bSkyModel)   skyBuckets[nBucket].push_back(v);
 					else if (bTransModel) transBuckets[nBucket].push_back(v);
 					else                  buckets[nBucket].push_back(v);
 				}
@@ -6897,6 +7264,48 @@ static void R3D_BuildWorldInner(uint32_t pWorld)
 	if (g_nTransPolys)
 		Log("  R3D GLASS: %d triangles of TranslucentWorldModel, drawn last with"
 			" alpha %.2f and no depth write", g_nTransPolys, g_fTransAlpha);
+	// THE MIRRORS, last in the buffer. A brush property marks every face of
+	// the brush, so a mirror door lists its four-unit edges too; those have
+	// no area to speak of and stay plain glass (bMirror false), and only the
+	// pane reflects.
+	for (size_t b = 0; b < mirBuckets.size(); ++b)
+	{
+		const MirBucket& mb = mirBuckets[b];
+		if (mb.v.empty()) continue;
+		// Area from the triangles, in the face's own plane.
+		double fArea = 0.0;
+		for (size_t t = 0; t + 2 < mb.v.size(); t += 3)
+		{
+			const Vtx &a = mb.v[t], &bb = mb.v[t + 1], &c = mb.v[t + 2];
+			const double e1[3] = { bb.x - a.x, bb.y - a.y, bb.z - a.z };
+			const double e2[3] = { c.x - a.x, c.y - a.y, c.z - a.z };
+			const double cx = e1[1]*e2[2] - e1[2]*e2[1];
+			const double cy = e1[2]*e2[0] - e1[0]*e2[2];
+			const double cz = e1[0]*e2[1] - e1[1]*e2[0];
+			fArea += 0.5 * sqrt(cx*cx + cy*cy + cz*cz);
+		}
+		Batch bt{};
+		bt.pTexKey = mb.tx;
+		bt.szFile[0] = 0;
+		if (!mb.tx && !mb.sFile.empty()) strncpy_s(bt.szFile, sizeof bt.szFile, mb.sFile.c_str(), _TRUNCATE);
+		bt.pSRV   = nullptr;
+		bt.nStart = (UINT)verts.size();
+		bt.nCount = (UINT)mb.v.size();
+		bt.pSub   = mb.pSub;
+		bt.bMirror = (fArea >= 400.0);
+		memcpy(bt.fMirPlane, mb.pl, sizeof bt.fMirPlane);
+		for (int k = 0; k < 3; ++k) bt.fMirCentre[k] = (float)(mb.c[k] / (double)mb.v.size());
+		verts.insert(verts.end(), mb.v.begin(), mb.v.end());
+		g_Batches.push_back(bt);
+		if (bt.bMirror) ++g_nMirrorFaces;
+		Log("  R3D MIRROR: face %u - %u triangles, %.0f sq units, plane (%.3f %.3f %.3f) d %.1f, centre (%.0f %.0f %.0f), model %08X, tex %08X '%s'%s",
+			(unsigned)b, (unsigned)(mb.v.size() / 3), fArea, mb.pl[0], mb.pl[1], mb.pl[2], mb.pl[3],
+			bt.fMirCentre[0], bt.fMirCentre[1], bt.fMirCentre[2], (unsigned)mb.pSub, (unsigned)mb.tx,
+			mb.sFile.c_str(), bt.bMirror ? "" : "  (an edge: stays plain)");
+	}
+	if (!mirBuckets.empty())
+		Log("  R3D MIRROR: %ld reflecting faces on this level (%u tagged buckets); +StubMirrors %d",
+			g_nMirrorFaces, (unsigned)mirBuckets.size(), g_bMirrors);
 
 	if (g_bHaveSky)
 		Log("  R3D SKY: of its polygons - %d unreadable, %d bad count, %d a marker"
@@ -7685,11 +8094,15 @@ namespace
 	const char* kPrimShader =
 		"cbuffer CB : register(b0) { row_major float4x4 mvp; float4 lmp; };\n"
 		"cbuffer PRM : register(b3) { float4 pf; };\n"	// x notex, y diffuse alpha, z multiply
+		// The mirror plane, for the mirror pass; (0,0,0,1) otherwise. See MIR
+		// in the world shader.
+		"cbuffer MIR : register(b8) { float4 mirclip; float4 mirvp; float4 mirp; };\n"
 		"Texture2D tex0 : register(t0);\n"
 		"SamplerState samp : register(s0);\n"
 		"struct VI { float3 pos : POSITION; float4 c : COLOR0; float2 uv : TEXCOORD0; };\n"
-		"struct VO { float4 pos : SV_POSITION; float4 c : COLOR0; float2 uv : TEXCOORD0; };\n"
-		"VO PVS(VI i) { VO o; o.pos = mul(float4(i.pos, 1.0f), mvp); o.c = i.c; o.uv = i.uv; return o; }\n"
+		"struct VO { float4 pos : SV_POSITION; float4 c : COLOR0; float2 uv : TEXCOORD0; float clip : SV_ClipDistance0; };\n"
+		"VO PVS(VI i) { VO o; o.pos = mul(float4(i.pos, 1.0f), mvp); o.c = i.c; o.uv = i.uv;"
+		" o.clip = dot(float4(i.pos, 1.0f), mirclip); return o; }\n"
 		"float4 PPS(VO i) : SV_TARGET {\n"
 		"  float4 t = (pf.x > 0.5f) ? float4(1,1,1,1) : tex0.Sample(samp, i.uv);\n"
 		"  float a = (pf.y > 0.5f) ? i.c.a : t.a * i.c.a;\n"
@@ -8017,12 +8430,112 @@ static void EnvDraw(size_t b, const float* pQuat, const float* pPos)
 			// patches that moved with the head (a headset clip and the desk,
 			// 22 September; +StubEnvMap 0 removed them, a depth bias and a
 			// flat-face test did not).
-			if (bPan && g_pRSWater) g_pCtx->RSSetState(g_pRSWater);
+			if (bPan && g_pRSWater) g_pCtx->RSSetState((g_bMirrorPass && g_pRSWaterFront) ? g_pRSWaterFront : g_pRSWater);
 			g_pCtx->Draw(g_Batches[b].nCount, g_Batches[b].nStart);
 			if (bPan && g_pRSWater) g_pCtx->RSSetState(g_pRS);
 			++g_nEnvDraws;
 			if (pWas) { g_pCtx->OMSetDepthStencilState(pWas, nWasRef); pWas->Release(); }
 		}
+	}
+}
+
+// The run's lamps into b3, and the model light's mode to match. Called
+// in place of SetModelLight by the two mesh draw sites.
+static void SetRunLight(const MeshRun& run)
+{
+	const bool bDir = g_bModelLight && g_bModelLightDir && run.nLSet >= 0
+		&& run.nLSet < (int)g_MLSets.size() && g_pCBMdlLights;
+	if (bDir && g_nMLSetBound != run.nLSet)
+	{
+		D3D11_MAPPED_SUBRESOURCE ms{};
+		if (SUCCEEDED(g_pCtx->Map(g_pCBMdlLights, 0, D3D11_MAP_WRITE_DISCARD, 0, &ms)))
+		{
+			const ModelLightSet& ls = g_MLSets[run.nLSet];
+			float b[36]; memset(b, 0, sizeof b);
+			memcpy(b, ls.p, sizeof ls.p);
+			memcpy(b + 16, ls.c, sizeof ls.c);
+			b[32] = (float)ls.n;
+			b[33] = ls.ctr[0]; b[34] = ls.ctr[1]; b[35] = ls.ctr[2];
+			memcpy(ms.pData, b, sizeof b);
+			g_pCtx->Unmap(g_pCBMdlLights, 0);
+			g_nMLSetBound = run.nLSet;
+		}
+	}
+	if (bDir)
+	{
+		// Bound every run: other pipelines may use slot 3.
+		ID3D11Buffer* pB = g_pCBMdlLights;
+		g_pCtx->PSSetConstantBuffers(3, 1, &pB);
+	}
+	SetModelLight(run.fLight[0], run.fLight[1], run.fLight[2],
+				  !g_bModelLight ? 0.0f : bDir ? 2.0f : 1.0f);
+}
+
+// THE LEVEL'S CHROME MAP, loaded once per name. Kept in the environment-map
+// cache under its own key, so it is released with the rest at a world change.
+static ID3D11ShaderResourceView* ModelEnvSRV()
+{
+	if (!g_pDev || !g_szModelEnv[0]) return nullptr;
+	const std::string key = std::string("*model* ") + g_szModelEnv;
+	std::map<std::string, ID3D11ShaderResourceView*>::iterator it = g_EnvByName.find(key);
+	if (it != g_EnvByName.end()) return it->second;
+	DtxInfo ei{};
+	ID3D11ShaderResourceView* pEnv = Dtx_Get(g_pDev, g_szModelEnv, &ei);
+	Log("  R3D MODEL ENVMAP: %s -> %s", g_szModelEnv, pEnv ? "loaded" : "NOT FOUND - models drawn without chrome");
+	g_EnvByName[key] = pEnv;
+	return pEnv;
+}
+
+// THE CHROME OVER ONE MODEL RUN: the same vertices again, blended over, with
+// the map at t0 and the run's own skin at t1 for its alpha mask. Test-equal,
+// no depth write, so it lands exactly on the pieces just drawn. Every piece
+// of state it changes it puts back as it found it.
+static void ModelEnvDraw(const MeshRun& run)
+{
+	ID3D11ShaderResourceView* pEnv = ModelEnvSRV();
+	if (!pEnv || !g_pCBEnv || !g_pBlendEnvLerp || !run.pSRV) return;
+	float er[3], eu[3], ef[3];
+	QuatBasis(g_fLastQuat, er, eu, ef);
+	const float* p = g_fLastPos;
+	for (int pass = 0; pass < 2; ++pass)
+	{
+		const float e[16] = { er[0], er[1], er[2], 0.0f, eu[0], eu[1], eu[2], 0.0f,
+							  p[0], p[1], p[2], 0.0f,
+							  2.0f, 0.0f, g_fModelEnvScale, pass == 0 ? 1.0f : 0.0f };
+		D3D11_MAPPED_SUBRESOURCE em{};
+		if (FAILED(g_pCtx->Map(g_pCBEnv, 0, D3D11_MAP_WRITE_DISCARD, 0, &em))) return;
+		memcpy(em.pData, e, sizeof e);
+		g_pCtx->Unmap(g_pCBEnv, 0);
+		if (pass == 1) break;		// the flag is off again for everything after
+
+		ID3D11DepthStencilState* pDWas = nullptr; UINT nDRef = 0;
+		ID3D11BlendState* pBWas = nullptr; float fBF[4] = { 0, 0, 0, 0 }; UINT nBMask = 0xFFFFFFFF;
+		ID3D11ShaderResourceView* pT1Was = nullptr;
+		g_pCtx->OMGetDepthStencilState(&pDWas, &nDRef);
+		g_pCtx->OMGetBlendState(&pBWas, fBF, &nBMask);
+		g_pCtx->PSGetShaderResources(1, 1, &pT1Was);
+		if (g_pDSSEnv) g_pCtx->OMSetDepthStencilState(g_pDSSEnv, nDRef);
+		const float kF[4] = { 0, 0, 0, 0 };
+		g_pCtx->OMSetBlendState(g_pBlendEnvLerp, kF, 0xFFFFFFFF);
+		g_pCtx->PSSetShaderResources(0, 1, &pEnv);
+		ID3D11ShaderResourceView* pSkin = run.pSRV;
+		g_pCtx->PSSetShaderResources(1, 1, &pSkin);
+		g_pCtx->Draw(run.nCount, run.nStart);
+		++g_nModelEnvDraws;
+		g_pCtx->PSSetShaderResources(0, 1, &pSkin);
+		g_pCtx->PSSetShaderResources(1, 1, &pT1Was);
+		g_pCtx->OMSetBlendState(pBWas, fBF, nBMask);
+		g_pCtx->OMSetDepthStencilState(pDWas, nDRef);
+		if (pT1Was) pT1Was->Release();
+		if (pBWas) pBWas->Release();
+		if (pDWas) pDWas->Release();
+	}
+	static long s_nSaid = 0;
+	if (s_nSaid < 3 && g_nModelEnvDraws > 0)
+	{
+		++s_nSaid;
+		Log("  R3D MODEL ENVMAP: chrome drawn over an environment-mapped model (%s, scale %.2f)",
+			g_szModelEnv, g_fModelEnvScale);
 	}
 }
 
@@ -8223,6 +8736,23 @@ void R3D_DrawWorld(const float* pPos, const float* pQuat,
 				fFovX, fFovY, fNear, fFar, nLeft, nTop, nRight, nBottom,
 				pTan4 ? "" : "(none) ", pTan4 ? pTan4[0] : 0.0f, pTan4 ? pTan4[1] : 0.0f, pTan4 ? pTan4[2] : 0.0f, pTan4 ? pTan4[3] : 0.0f);
 	}
+	// ENGINE COORDINATES IN, PIXELS FROM HERE ON. The rectangle is the
+	// engine's, in its mode; the target may be bigger (R3D_SetScale). Scaled
+	// once, here, so every use below - the viewport, the eye's size, the
+	// menu-zoom band - is in the target's pixels, as it always was at 1:1.
+	// NOT FOR THE SCOPE: its rectangle is its own texture's, already in pixels
+	// (0, 0, size, size). Scaled again, the lens picture was drawn about 1.57x
+	// too big with its centre in the lower right, so the red dot and the shots
+	// - on the scope's true axis - sat in the lower right of the lens (the
+	// Hampton Carbine, headset, 27 September); 1.0, before this scaling, was
+	// right.
+	if ((g_fPxX != 1.0f || g_fPxY != 1.0f) && !g_bScopePass)
+	{
+		nLeft   = (int)((float)nLeft   * g_fPxX + 0.5f);
+		nRight  = (int)((float)nRight  * g_fPxX + 0.5f);
+		nTop    = (int)((float)nTop    * g_fPxY + 0.5f);
+		nBottom = (int)((float)nBottom * g_fPxY + 0.5f);
+	}
 	// NOTHING TO DRAW WITH. The engine frees and reloads this DLL on every
 	// focus loss and gain; a pass that arrives between the teardown and the
 	// rebuild has no device and no buffers, and every call below would read
@@ -8338,15 +8868,15 @@ void R3D_DrawWorld(const float* pPos, const float* pQuat,
 	//
 	// The main menu is untouched: there is no world, so nothing is substituted
 	// and Cate still stands where the interface camera can see her.
-	static float s_fWPos[2][3], s_fWQuat[2][4], s_fWTan[2][4];
-	static float s_fWFov[2][2], s_fWNear[2], s_fWFar[2];
-	static int   s_bWCam[2] = { 0, 0 }, s_bWTan[2] = { 0, 0 };
+	// (The stash - s_fWPos and the rest - is at file scope: the mirror pass
+	// reads it too, see R3D_PausedWorldPose.)
 	const int ie = (nEye == 1) ? 1 : 0;
 
-	if (g_bScopePass)
+	if (g_bScopePass || g_bMirrorPass)
 	{
 		// The scope's own camera, used as given: nothing stashed, nothing
-		// substituted, the eyes' records untouched.
+		// substituted, the eyes' records untouched. The mirror pass carries
+		// the eye's own camera and leaves the records to the eye pass.
 	}
 	else if (!bInterface)
 	{
@@ -8435,7 +8965,7 @@ void R3D_DrawWorld(const float* pPos, const float* pQuat,
 		memcpy(g_fLastPos, pPos, sizeof g_fLastPos);
 		memcpy(g_fLastQuat, pQuat, sizeof g_fLastQuat);
 		g_bHaveCam = 1;
-		if (!g_bScopePass)
+		if (!g_bScopePass && !g_bMirrorPass)
 		{
 			memcpy(g_fEyeCamPos, pPos, sizeof g_fEyeCamPos);
 			memcpy(g_fEyeCamQuat, pQuat, sizeof g_fEyeCamQuat);
@@ -8522,7 +9052,7 @@ void R3D_DrawWorld(const float* pPos, const float* pQuat,
 	// conventional, 0 for reversed. Getting this wrong and the comparison
 	// right draws nothing at all, which is a very loud failure - deliberately
 	// derived from the same flag rather than written down twice.
-	g_pCtx->ClearDepthStencilView((g_bScopePass && g_pScopeDSV) ? g_pScopeDSV : g_pDSV, D3D11_CLEAR_DEPTH,
+	g_pCtx->ClearDepthStencilView((g_bScopePass && g_pScopeDSV) ? g_pScopeDSV : (g_bMirrorPass && g_pMirrorDSV) ? g_pMirrorDSV : g_pDSV, D3D11_CLEAR_DEPTH,
 								  g_bRevZ ? 0.0f : 1.0f, 0);
 
 	float mvp[16];
@@ -8612,6 +9142,20 @@ void R3D_DrawWorld(const float* pPos, const float* pQuat,
 			pTanUse = fTanZoom;
 		}
 		ViewProj(pPos, pQuat, fFovX, fFovY, fNearUse, fFarUse, mvp, pTanUse);
+		// THE MIRROR PASS: the same camera, looking at the reflected world.
+		// Row-vector form, so the reflection goes FIRST: v . (R . VP).
+		if (g_bMirrorPass)
+		{
+			float rm[16];
+			for (int r2 = 0; r2 < 4; ++r2)
+				for (int c2 = 0; c2 < 4; ++c2)
+				{
+					float s2 = 0.0f;
+					for (int k2 = 0; k2 < 4; ++k2) s2 += g_fMirrorR[r2 * 4 + k2] * mvp[k2 * 4 + c2];
+					rm[r2 * 4 + c2] = s2;
+				}
+			memcpy(mvp, rm, sizeof mvp);
+		}
 	}
 
 	// A draw that executes and shows nothing has two possible causes - the
@@ -8689,6 +9233,24 @@ void R3D_DrawWorld(const float* pPos, const float* pQuat,
 	if (FAILED(TimedMap(g_pCB, D3D11_MAP_WRITE_DISCARD, &ms, 0))) return;
 	memcpy(ms.pData, mvp, sizeof mvp);
 	memcpy(g_fLastMVP, mvp, sizeof mvp);
+	// +StubMirrorDebug: where this pass puts the mirror's centre on screen.
+	// A point ON the plane is fixed by the reflection, so the mirror pass and
+	// the eye pass must put it in the same place.
+	{
+		static long s_nSaidProj = 0;
+		if (g_nMirrorDebug && s_nSaidProj < 12 && g_nMirrorPasses > 300 && !g_bScopePass)
+		{
+			++s_nSaidProj;
+			const float* c = g_fMirrorCentreDbg;
+			float cl[4];
+			for (int j = 0; j < 4; ++j) cl[j] = c[0]*mvp[0*4+j] + c[1]*mvp[1*4+j] + c[2]*mvp[2*4+j] + mvp[3*4+j];
+			Log("  R3D MIRROR DEBUG: %s pass eye %d - mirror centre at ndc %+.3f %+.3f (w %.1f); camera (%.0f %.0f %.0f) quat (%.3f %.3f %.3f %.3f) tan %s %.3f %.3f %.3f %.3f",
+				g_bMirrorPass ? "mirror" : "eye", ie, cl[3] != 0.0f ? cl[0] / cl[3] : 0.0f, cl[3] != 0.0f ? cl[1] / cl[3] : 0.0f, cl[3],
+				pPos ? pPos[0] : 0.0f, pPos ? pPos[1] : 0.0f, pPos ? pPos[2] : 0.0f,
+				pQuat ? pQuat[0] : 0.0f, pQuat ? pQuat[1] : 0.0f, pQuat ? pQuat[2] : 0.0f, pQuat ? pQuat[3] : 0.0f,
+				pTan4 ? "yes" : "no", pTan4 ? pTan4[0] : 0.0f, pTan4 ? pTan4[1] : 0.0f, pTan4 ? pTan4[2] : 0.0f, pTan4 ? pTan4[3] : 0.0f);
+		}
+	}
 	{
 		const float lmp[4] = { g_fLMScale, (float)g_bLMOnly, 0, g_fAlphaOut };
 		g_fAlphaCutSet = 0.0f;	// this write puts lmp.z back to zero
@@ -8700,6 +9262,13 @@ void R3D_DrawWorld(const float* pPos, const float* pQuat,
 	vp.TopLeftX = (float)nLeft; vp.TopLeftY = (float)nTop;
 	vp.Width = (float)(nRight - nLeft); vp.Height = (float)(nBottom - nTop);
 	vp.MinDepth = 0.0f; vp.MaxDepth = 1.0f;
+	// The mirror pass draws the whole of its own, smaller texture. The
+	// projection is the eye's, so the picture is the eye's view scaled.
+	if (g_bMirrorPass)
+	{
+		vp.TopLeftX = 0.0f; vp.TopLeftY = 0.0f;
+		vp.Width = (float)g_nMirrorTexW; vp.Height = (float)g_nMirrorTexH;
+	}
 	g_pCtx->RSSetViewports(1, &vp);
 	g_pCtx->RSSetState(g_pRS);
 	if (g_pBlendOpaque)
@@ -8714,6 +9283,15 @@ void R3D_DrawWorld(const float* pPos, const float* pQuat,
 	ID3D11RenderTargetView* pColour =
 		(g_nMsaaMade > 1 && g_pMsaaRTV) ? g_pMsaaRTV : g_pRTV;
 	if (g_bScopePass && g_pScopeRTV) pColour = g_pScopeRTV;
+	if (g_bMirrorPass && g_pMirrorRTV[g_nMirrorEye])
+	{
+		// Cleared whole, to the fog colour like the eye's target, so the
+		// sky's holes in the reflection are the fog and not last frame.
+		pColour = g_pMirrorRTV[g_nMirrorEye];
+		float kClr[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
+		R3D_FogClearColour(kClr);
+		g_pCtx->ClearRenderTargetView(pColour, kClr);
+	}
 
 	// ONCE PER FRAME, NOT PER EYE - clearing per eye would erase the eye that
 	// had already drawn, since both share this target at different viewports.
@@ -8796,7 +9374,8 @@ void R3D_DrawWorld(const float* pPos, const float* pQuat,
 		}
 		g_bMsaaFresh = 0;
 	}
-	g_pCtx->OMSetRenderTargets(1, &pColour, (g_bScopePass && g_pScopeDSV) ? g_pScopeDSV : g_pDSV);
+	g_pCtx->OMSetRenderTargets(1, &pColour, (g_bScopePass && g_pScopeDSV) ? g_pScopeDSV
+											: (g_bMirrorPass && g_pMirrorDSV) ? g_pMirrorDSV : g_pDSV);
 	g_pCtx->OMSetDepthStencilState((g_bRevZ && g_pDSSRev) ? g_pDSSRev : g_pDSS, 0);
 
 	UINT nStride = sizeof(Vtx), nOff = 0;
@@ -8868,6 +9447,36 @@ void R3D_DrawWorld(const float* pPos, const float* pQuat,
 			{ memcpy(wm0.pData, w0, sizeof w0); g_pCtx->Unmap(g_pCBWater, 0); }
 			g_pCtx->VSSetConstantBuffers(7, 1, &g_pCBWater);
 		}
+	}
+	// b8: the mirror plane and viewport. A pass must set its own state: the
+	// clip plane is the mirror's during a mirror pass and (0,0,0,1) - clips
+	// nothing - in every other pass, written here at the top of each one.
+	if (g_pCBMir)
+	{
+		const float vpm[4] = { vp.TopLeftX, vp.TopLeftY,
+							   vp.Width  > 0.0f ? 1.0f / vp.Width  : 1.0f,
+							   vp.Height > 0.0f ? 1.0f / vp.Height : 1.0f };
+		const float kNoClip[4] = { 0, 0, 0, 1 };
+		const int ieM = (g_bMirrorStereo || ie == 0) ? ie : 0;
+		// NOT "and not an interface scene": the pause menu is one, drawn over
+		// the paused world, and its mirror has a reflection of its own now (see
+		// R3D_PausedWorldPose). The flag is set only by a pass run this frame.
+		const bool bHave = !g_bMirrorPass && !g_bScopePass
+						 && g_bMirrors && g_pPSMirror && g_bMirrorThisFrame[ieM] && g_pMirrorSRV[ieM];
+		// The clip keeps n.p - d >= 0, the eye's side: the plane goes in as (n, -d).
+		const float kClipPl[4] = { g_fMirrorPlaneLive[0], g_fMirrorPlaneLive[1], g_fMirrorPlaneLive[2], -g_fMirrorPlaneLive[3] };
+		WriteMirCB(g_bMirrorPass ? kClipPl : kNoClip, vpm, g_fMirrorOverlay, bHave ? 1.0f : 0.0f);
+		memcpy(g_fMirVp, vpm, sizeof g_fMirVp);
+		static long s_nSaidMirVp = 0;
+		if (g_nMirrorDebug && s_nSaidMirVp < 6 && g_nMirrorPasses > 300)
+		{
+			++s_nSaidMirVp;
+			Log("  R3D MIRROR DEBUG: %s pass eye %d viewport %.0f %.0f %.0fx%.0f, mirror texture %dx%d, reflection %s",
+				g_bMirrorPass ? "mirror" : "eye", ie, vp.TopLeftX, vp.TopLeftY, vp.Width, vp.Height,
+				g_nMirrorTexW, g_nMirrorTexH, bHave ? "declared" : "not declared");
+		}
+		g_pCtx->VSSetConstantBuffers(8, 1, &g_pCBMir);
+		g_pCtx->PSSetConstantBuffers(8, 1, &g_pCBMir);
 	}
 	// b6: the camera's frame for the environment pass, flag off.
 	if (g_pCBEnv)
@@ -9018,6 +9627,7 @@ void R3D_DrawWorld(const float* pPos, const float* pQuat,
 					// here excluded nothing real and is gone.
 					g_Batches[b].bSkyAdd = g_Batches[b].bSky && g_Batches[b].bSkyBlend
 						&& di.bZeroAlpha;
+					g_Batches[b].bZeroAlphaTex = (di.bZeroAlpha != 0);
 					if (g_Batches[b].pSRV) { ++nGot; if (g_Batches[b].bCut) ++nCut; }
 					continue;
 				}
@@ -9033,6 +9643,7 @@ void R3D_DrawWorld(const float* pPos, const float* pQuat,
 				g_Batches[b].bEnvPan = (i >= 0) && IsWaterName(g_Tex[i].szName);
 				g_Batches[b].bSkyAdd = g_Batches[b].bSky && g_Batches[b].bSkyBlend
 					&& (i >= 0) && g_Tex[i].bZeroAlpha;
+				g_Batches[b].bZeroAlphaTex = (i >= 0) && g_Tex[i].bZeroAlpha;
 				if (g_Batches[b].pSRV) { ++nGot; if (g_Batches[b].bCut) ++nCut; }
 				// WHY a texture is or is not a cut-out. "6 of 134" cannot say
 				// whether the one you are looking at was measured and rejected
@@ -9218,7 +9829,7 @@ void R3D_DrawWorld(const float* pPos, const float* pQuat,
 				// Clouds1, Moon and MoonFlare so those draw clear over the
 				// fog. This pass fogged every layer alike, so the whole sky
 				// came out one flat colour with the sun a slightly lighter
-				// square (the headset and the desk, 22 September); the
+				// square (headset and the desk, 22 September); the
 				// harbour's clouds carry no such flag and were fogged rightly.
 				int nSkyFogOnNow = bSkyFogNow ? 1 : 0;
 				for (size_t si = 0; si < skyIdx.size(); ++si)
@@ -9446,6 +10057,14 @@ void R3D_DrawWorld(const float* pPos, const float* pQuat,
 			if (g_Batches[b].bOcc) continue;		// drawn above, depth only
 			if (g_Batches[b].bTrans) continue;	// drawn last, blended
 			if (g_Batches[b].bGraded) continue;	// glass by texture: last, blended
+			// A MIRROR FACE IS NEVER DRAWN HERE. The one this eye's reflection
+			// was made for is composited after this loop; every other one is
+			// plain glass in the glass pass - including every mirror seen
+			// INSIDE a reflection (a texture cannot be sampled while it is
+			// being drawn into, and two facing mirrors would never end).
+			// Drawn here it was OPAQUE glass: the texture's 19% white at full
+			// strength, a white sheet where M08S05's facing mirror should be.
+			if (g_Batches[b].bMirror) continue;
 			{
 				const WMBase* pA = g_Batches[b].pSub
 								 ? WMBaseFor(g_Batches[b].pSub) : nullptr;
@@ -9474,7 +10093,7 @@ void R3D_DrawWorld(const float* pPos, const float* pQuat,
 			if (bCullWorld)
 			{
 				const bool bWant = (g_bWorldCull == 1) || (g_bWorldCull == 2 && g_Batches[b].pSub != 0);
-				if (bWant != bCullBound) { g_pCtx->RSSetState(bWant ? g_pRSWorldCull : g_pRS); bCullBound = bWant; }
+				if (bWant != bCullBound) { g_pCtx->RSSetState(bWant ? ((g_bMirrorPass && g_pRSWorldCullFront) ? g_pRSWorldCullFront : g_pRSWorldCull) : g_pRS); bCullBound = bWant; }
 			}
 			ID3D11ShaderResourceView* pSRV =
 				BatchSRV(b);
@@ -9603,6 +10222,77 @@ void R3D_DrawWorld(const float* pPos, const float* pQuat,
 			}
 		}
 		if (bCullBound) g_pCtx->RSSetState(g_pRS);
+
+		// ---- THE MIRROR FACES, wearing this eye's reflection ---------------
+		//
+		// Opaque, depth tested and written like the wall they are, so a
+		// character standing in front of the glass hides it. The pixel
+		// shader looks the reflection up by pixel position (the mirror pass
+		// used this eye's projection) and lays the face's own lit texture
+		// over it by its alpha. With no reflection this frame (nothing in
+		// view, the switch off) the shader draws the texture alone.
+		g_nMirrorCompBatch = -1;
+		if (g_bMirrors && g_pPSMirror && !g_bMirrorPass && !g_bModelOnly && !bNoWorld)
+		{
+			bool bAny = false;
+			for (size_t b = 0; b < g_Batches.size() && !bAny; ++b) bAny = g_Batches[b].bMirror;
+			if (bAny)
+			{
+				const int ieM = (g_bMirrorStereo || ie == 0) ? ie : 0;
+				ID3D11ShaderResourceView* pMir = g_bMirrorThisFrame[ieM] ? g_pMirrorSRV[ieM] : nullptr;
+				g_pCtx->PSSetShader(g_pPSMirror, nullptr, 0);
+				g_pCtx->PSSetShaderResources(3, 1, &pMir);
+				if (g_pBlendOpaque)
+				{
+					const float kNoF2[4] = { 0, 0, 0, 0 };
+					g_pCtx->OMSetBlendState(g_pBlendOpaque, kNoF2, 0xFFFFFFFF);
+					g_bA2CBound = false;
+				}
+				for (size_t b = 0; b < g_Batches.size(); ++b)
+				{
+					if (!g_Batches[b].bMirror) continue;
+					// Only the face this eye's reflection was drawn for; the
+					// rest are plain glass (the glass pass).
+					if (!pMir || (int)b != g_nMirrorBatch[ieM]) continue;
+					{
+						const WMBase* pA = g_Batches[b].pSub ? WMBaseFor(g_Batches[b].pSub) : nullptr;
+						if (pA && !g_bDrawHiddenWM && (pA->nFlags & VRWORLD_F_INVIS)) continue;
+					}
+					ID3D11ShaderResourceView* pSRV = BatchSRV(b);
+					g_pCtx->PSSetShaderResources(0, 1, &pSRV);
+					// GLASS WHOSE ALPHA WAS ALL ZERO lays nothing over the
+					// reflection: the loader made that channel opaque, and read
+					// as opaque the glass covered the mirror whole (M06S01's
+					// gl0134 - a grey sheet where the room should be).
+					const bool bNoOverlay = g_Batches[b].bZeroAlphaTex;
+					if (bNoOverlay)
+					{
+						const float kNoClipC[4] = { 0, 0, 0, 1 };
+						WriteMirCB(kNoClipC, g_fMirVp, 0.0f, pMir ? 1.0f : 0.0f);
+					}
+					// A mirror on a DOOR moves with it: the same fold as the
+					// opaque loop's, onto this pass's matrix.
+					const WMBase* pWM = (g_bWorldXform && g_Batches[b].pSub)
+									  ? WMBaseFor(g_Batches[b].pSub) : nullptr;
+					const bool bMoved = (pWM && pWM->bMoved);
+					float mvM[16];
+					if (bMoved) MovedMvp(pWM, mvp, mvM);
+					WriteWorldCB(bMoved ? mvM : mvp, 0.0f);
+					g_pCtx->Draw(g_Batches[b].nCount, g_Batches[b].nStart);
+					++g_nMirrorComposites;
+					g_nMirrorCompBatch = (long)b;
+					if (bMoved) WriteWorldCB(mvp, 0.0f);
+					if (bNoOverlay)
+					{
+						const float kNoClipC[4] = { 0, 0, 0, 1 };
+						WriteMirCB(kNoClipC, g_fMirVp, g_fMirrorOverlay, pMir ? 1.0f : 0.0f);
+					}
+				}
+				ID3D11ShaderResourceView* pNone = nullptr;
+				g_pCtx->PSSetShaderResources(3, 1, &pNone);
+				g_pCtx->PSSetShader(g_pPS, nullptr, 0);
+			}
+		}
 		PhaseMark(0);		// the world's own batches (and the sky)
 		static long s_nSaidNoPix = 0;
 		if (nSkippedNoPix && s_nSaidNoPix++ == 0)
@@ -9625,7 +10315,7 @@ void R3D_DrawWorld(const float* pPos, const float* pQuat,
 		// cleared when the block is skipped - which is the first frame of a
 		// new world, the case above - and at the world walk, which also forces
 		// the next pass to rebuild (g_bMeshInvalidate).
-		if (!(g_bModelMesh && g_bHaveModels && g_Models.nCount)) g_MeshRuns.clear();
+		if (!(g_bModelMesh && g_bHaveModels && g_Models.nCount)) g_MeshRuns.clear(); g_MLSets.clear(); g_nMLSetBound = -2;
 		//
 		// Skinned on the CPU from the piece's own records. A vertex is one or
 		// more 20-byte records whose weights sum to 1.0, each giving the
@@ -9697,7 +10387,7 @@ void R3D_DrawWorld(const float* pPos, const float* pQuat,
 			// cost for nothing.
 			static uint32_t s_nBuiltFrame = 0xFFFFFFFFu;
 			static UINT     s_nBuiltVerts = 0;
-			if (g_bMeshInvalidate) { g_bMeshInvalidate = false; s_nBuiltFrame = 0xFFFFFFFFu; g_MeshRuns.clear(); }
+			if (g_bMeshInvalidate) { g_bMeshInvalidate = false; s_nBuiltFrame = 0xFFFFFFFFu; g_MeshRuns.clear(); g_MLSets.clear(); g_nMLSetBound = -2; }
 			const bool bRebuild = (s_nBuiltFrame != g_Models.nFrame);
 
 			D3D11_MAPPED_SUBRESOURCE mm{};
@@ -9733,7 +10423,7 @@ void R3D_DrawWorld(const float* pPos, const float* pQuat,
 						 rPiece=0, rCounts=0, rMem=0, rSkin=0, rBehind=0,
 						 rInvis=0, rStill=0;
 				uint32_t nBadIdx = 0, nSkinTotal = 0;
-				g_MeshRuns.clear();
+				g_MeshRuns.clear(); g_MLSets.clear(); g_nMLSetBound = -2;
 				// THE POOL, created on first use and reset only here, at the
 				// start of a build: nothing drawn from it this frame yet.
 				if (g_bMeshPool && g_bSkinCache && out != pGpuOut)
@@ -9786,8 +10476,14 @@ void R3D_DrawWorld(const float* pPos, const float* pQuat,
 					// head. +StubBody exists to draw it anyway, and drew nothing,
 					// because this rule ran first and honoured the flag. In the
 					// headset there was no in-game body for the player.
+					// THE BODY IS WANTED in its role: the copy the client marked
+					// MIRRORONLY for mirrors (+StubMirrorBody), any other for the
+					// eyes (+StubBody). See VRMODEL_F_HIDENODES in VRShared.h.
+					const bool bWantBody = (mi.nFlags & VRMODEL_F_MIRRORONLY)
+						? (g_bMirrorBody && g_bMirrors && g_nMirrorFaces > 0)
+						: (g_bDrawBody != 0);
 					if ((mi.nFlags & VRMODEL_F_INVISIBLE)
-						&& !(g_bDrawBody && (mi.nFlags & 1u)))
+						&& !(bWantBody && (mi.nFlags & (1u | VRMODEL_F_MIRRORONLY))))
 					{
 						++g_nInvisInst;
 						// THE ENGINE'S OWN BIT, which is a far stronger rule
@@ -9900,7 +10596,7 @@ void R3D_DrawWorld(const float* pPos, const float* pQuat,
 					// are inside her skull and the view is a wall of face.
 					if ((mi.nFlags & 1u)
 						&& !(mi.nFlags & VRMODEL_F_VIEWMODEL)
-						&& !g_bDrawBody)
+						&& !bWantBody)
 					{ ++rPlayer; continue; }
 					// A SIZE LIMIT INHERITED FROM THE DEBUG BOXES, and it does not
 					// belong here. The stand-in boxes needed it because an enormous
@@ -9961,7 +10657,7 @@ void R3D_DrawWorld(const float* pPos, const float* pQuat,
 					const float* pCullQuat = bEyeCull ? g_fEyeCamQuat : g_fLastQuat;
 					if (g_bHaveCam
 						&& !(mi.nFlags & VRMODEL_F_VIEWMODEL)
-						&& !(g_bDrawBody && (mi.nFlags & 1u))
+						&& !(bWantBody && (mi.nFlags & (1u | VRMODEL_F_MIRRORONLY)))
 						&& (!g_bOwnedFlagSeen || (mi.nFlags & (VRMODEL_F_OWNED | 1u)))
 						&& fabsf(pCullPos[0] - mi.fPos[0]) <= mi.fDims[0]
 						&& fabsf(pCullPos[1] - mi.fPos[1]) <= mi.fDims[1]
@@ -10002,11 +10698,27 @@ void R3D_DrawWorld(const float* pPos, const float* pQuat,
 						// testing, 20 September: the gun model disappeared when the hand
 						// moved the gun around a little. The view weapon is skinned
 						// whatever its origin does; it is one instance.
-						if (fwd4 < -fRad && !(mi.nFlags & VRMODEL_F_VIEWMODEL)) { ++g_nCulledBehind; ++rBehind; continue; }
+						// ...AND NOT WHEN A MIRROR SHOWS IT. What is behind the eye is
+						// exactly what a mirror in front of it reflects. The runs are
+						// built once a frame, by the mirror pass when there is one, so
+						// an instance on the eye's side of the mirror plane is kept
+						// wherever it is relative to the eye.
+						bool bMirrorKeeps = false;
+						if (fwd4 < -fRad && (g_bMirrorPass || g_bMirrorThisFrame[0] || g_bMirrorThisFrame[1]))
+						{
+							const float* pl = g_fMirrorPlaneLive;
+							bMirrorKeeps = (pl[0]*mi.fPos[0] + pl[1]*mi.fPos[1] + pl[2]*mi.fPos[2] - pl[3]) > -fRad;
+						}
+						if (fwd4 < -fRad && !(mi.nFlags & VRMODEL_F_VIEWMODEL) && !bMirrorKeeps) { ++g_nCulledBehind; ++rBehind; continue; }
 					}
 					if (mi.nNodeFirst + mi.nNodeCount > VRMODELS_MAX_NODES) { ++rNodes; continue; }
 					if (!mi.nNodeCount) { ++rNodes; continue; }
 					// Did this instance's skeleton change since last frame?
+					// THIS INSTANCE'S LAMPS, before any path below can reuse a
+					// cached run: the lamps move (muzzle flashes) when the mesh
+					// does not.
+					const int nLSetThis = (g_bModelLight && !g_bInterfaceOnly)
+						? ModelLightSetFor(mi.fPos) : -1;
 					uint32_t nSkelHash = 0;
 					bool bStill = false;
 					{
@@ -10032,6 +10744,12 @@ void R3D_DrawWorld(const float* pPos, const float* pQuat,
 							h = (h ^ v) * 16777619u;
 						}
 						h = (h ^ mi.nFlags) * 16777619u;
+						for (int q = 0; q < 4; ++q)
+						{
+							uint32_t v; memcpy(&v, &mi.fShowMirror[q], 4);
+							h = (h ^ mi.nShowNodes[q]) * 16777619u;
+							h = (h ^ v) * 16777619u;
+						}
 						nSkelHash = h;
 						std::map<uint32_t, uint32_t>::iterator it
 							= g_NodeHash.find(mi.nObject);
@@ -10084,10 +10802,11 @@ void R3D_DrawWorld(const float* pPos, const float* pQuat,
 								for (size_t z = 0; z < c.runs.size(); ++z)
 								{
 									MeshRun r = c.runs[z];
-									r.nStart += c.nPoolStart;
+									r.nStart += c.nPoolStart; r.nLSet = nLSetThis;
 									r.nVB = 1;
 									if (!g_MeshRuns.empty()
 										&& g_MeshRuns.back().nVB == 1
+										&& g_MeshRuns.back().nEnv == r.nEnv && g_MeshRuns.back().nLSet == r.nLSet
 										&& g_MeshRuns.back().pSRV == r.pSRV
 										&& g_MeshRuns.back().fCutRef == r.fCutRef
 										&& g_MeshRuns.back().nBlend == r.nBlend
@@ -10123,7 +10842,7 @@ void R3D_DrawWorld(const float* pPos, const float* pQuat,
 							for (size_t z = 0; z < c.runs.size(); ++z)
 							{
 								MeshRun r = c.runs[z];
-								r.nStart += nv;
+								r.nStart += nv; r.nLSet = nLSetThis;
 								// Coalesce with the run before it on the same
 								// terms the build loop uses, or a cached
 								// instance costs more draw calls than a built
@@ -10131,6 +10850,7 @@ void R3D_DrawWorld(const float* pPos, const float* pQuat,
 								r.nVB = 0;
 								if (!g_MeshRuns.empty()
 									&& g_MeshRuns.back().nVB == 0
+									&& g_MeshRuns.back().nEnv == r.nEnv && g_MeshRuns.back().nLSet == r.nLSet
 									&& g_MeshRuns.back().pSRV == r.pSRV
 									&& g_MeshRuns.back().fCutRef == r.fCutRef
 									&& g_MeshRuns.back().nBlend == r.nBlend
@@ -10809,7 +11529,14 @@ void R3D_DrawWorld(const float* pPos, const float* pQuat,
 					// origin, which in a loaded level is anywhere at all - a dark
 					// cell, as often as not. Retail lights them flat; so do we.
 					if (g_bModelLight && !g_bInterfaceOnly)
-					{ LGridAt(mi.fPos, fInstLight); LightDirectAt(mi.fPos, fInstLight); }
+					{
+						LGridAt(mi.fPos, fInstLight);
+						// THE SAME BRIGHTNESS AS WITHOUT THE LAMPS' DIRECTION, always.
+						// The lamps only decide which side of the model is lit
+						// (see the shader's MLT branch); how bright it is stays
+						// what the headset already approved.
+						LightDirectAt(mi.fPos, fInstLight);
+					}
 					const size_t nRunStart   = g_MeshRuns.size();
 					const uint32_t nPieces0  = nPieces;
 					const uint32_t nTris0    = nTris;
@@ -10882,6 +11609,7 @@ void R3D_DrawWorld(const float* pPos, const float* pQuat,
 						// division, head_zTex1* and Eyelash*_zTex2*, in all
 						// four outfits.
 						if ((mi.nFlags & 1u) && g_bDrawBody && g_bHideHead
+							&& !(mi.nFlags & VRMODEL_F_MIRRORONLY)
 							&& MemKind(pc + 0x48, 32) == 2)
 						{
 							const char* pszP = (const char*)(uintptr_t)(pc + 0x48);
@@ -10911,12 +11639,26 @@ void R3D_DrawWorld(const float* pPos, const float* pQuat,
 						// not a list fitted to what looked wrong.
 						// ...and a VEHICLE's hands stay: they hold the bars,
 						// which is where the player's hands are.
+						// ...EXCEPT THE SUPPORT HAND: with nShowNodes set, the piece
+						// is drawn filtered to the triangles of those nodes (see
+						// VRModelInst::nShowNodes) - the left hand alone, on the gun.
+						bool bNodeFilter = false;
 						if ((mi.nFlags & VRMODEL_F_VIEWMODEL) && g_bHideViewArms
 							&& !(mi.nFlags & VRMODEL_F_VEHICLE)
 							&& MemKind(pc + 0x48, 32) == 2
 							&& _strnicmp((const char*)(uintptr_t)(pc + 0x48),
 										 "Hand", 4) == 0)
-						{ ++g_nViewArmsHidden; continue; }
+						{
+							if (mi.nShowNodes[0] | mi.nShowNodes[1] | mi.nShowNodes[2] | mi.nShowNodes[3])
+								bNodeFilter = true;
+							else { ++g_nViewArmsHidden; continue; }
+						}
+						// THE FIRST-PERSON BODY'S ARMS (VRMODEL_F_HIDENODES): the
+						// triangles touching any listed node are not drawn. The
+						// view weapon is the hands; the body's own arms, posed
+						// by the game's third-person animation, pointed elsewhere.
+						const bool bNodeHide = (mi.nFlags & VRMODEL_F_HIDENODES)
+							&& (mi.nShowNodes[0] | mi.nShowNodes[1] | mi.nShowNodes[2] | mi.nShowNodes[3]);
 						// A PIECE THE GAME HAS HIDDEN (VRModelInst::nHideMask, the
 						// engine's own per-object status for the first 32 pieces).
 						if (k < 32 && (mi.nHideMask & (1u << k))) { ++g_nPiecesHidden; continue; }
@@ -11252,6 +11994,9 @@ void R3D_DrawWorld(const float* pPos, const float* pQuat,
 						static std::vector<float> vaskin;
 						static std::vector<float> vanrm;
 						static std::vector<uint8_t> vaok;
+						// bNodeFilter: 1 where the vertex's heaviest node is one
+						// the instance asked to show.
+						static std::vector<uint8_t> vakeep;
 						static std::vector<uint8_t> vabad;
 						// The vertex's own BIND position (entry +0x08), and
 						// whether it is blended. Both feed the edge instrument.
@@ -11286,6 +12031,7 @@ void R3D_DrawWorld(const float* pPos, const float* pQuat,
 								// every face touching it draws a blade to the
 								// world origin.
 								vaok.assign((size_t)nPV, 0);
+								if (bNodeFilter || bNodeHide) vakeep.assign((size_t)nPV, 0);
 								if (g_bSkinDiag || g_bEdgeChk)
 								{
 									vabad.assign((size_t)nPV, 0);
@@ -11625,6 +12371,9 @@ void R3D_DrawWorld(const float* pPos, const float* pQuat,
 										vablend[vi] = (nR2 > 1) ? 1 : 0;
 									}
 									vaok[vi] = 1;
+								if ((bNodeFilter || bNodeHide) && nBestNode < 128
+									&& (mi.nShowNodes[nBestNode >> 5] & (1u << (nBestNode & 31))))
+									vakeep[vi] = 1;
 									++nGood;
 								}
 								bVAOK = (nGood * 20 >= nPV * 19);	// 95%
@@ -11810,6 +12559,7 @@ void R3D_DrawWorld(const float* pPos, const float* pQuat,
 							MemKind(pF + (nF - 1) * 32, 32) != 2) { ++rMem; continue; }
 
 						// --- emit the faces ---
+						const UINT nvEmit0 = nv;		// this piece's first vertex, for the support hand's mirror
 						LARGE_INTEGER qEm0; QueryPerformanceCounter(&qEm0);
 						for (uint32_t fi = 0; fi < nF; ++fi)
 						{
@@ -11824,6 +12574,13 @@ void R3D_DrawWorld(const float* pPos, const float* pQuat,
 							// rather than drawing it from the world origin.
 							if (bVAOK && (!vaok[h[0]] || !vaok[h[1]] || !vaok[h[2]]))
 								{ ++g_nOriginFaces; continue; }
+							// The support hand: this piece's other triangles (the
+							// arms, the right hand) are not drawn. Without the
+							// per-vertex skin there is no telling, so nothing is.
+							if (bNodeFilter && (!bVAOK || !vakeep[h[0]] || !vakeep[h[1]] || !vakeep[h[2]]))
+								continue;
+							if (bNodeHide && bVAOK && (vakeep[h[0]] || vakeep[h[1]] || vakeep[h[2]]))
+								{ ++g_nBodyArmTris; continue; }
 							// Into the model's array, at this piece's slice.
 							const uint32_t i0 = nOff + h[0];
 							const uint32_t i1 = nOff + h[1];
@@ -11988,6 +12745,32 @@ void R3D_DrawWorld(const float* pPos, const float* pQuat,
 							}
 							++nTris;
 						}
+						// THE SUPPORT HAND'S MIRROR (VRModelInst::fShowMirror): the
+						// hand just emitted, reflected in the plane with that normal
+						// through the HAND'S OWN CENTRE (plus fShowMirror[3] along
+						// the normal) - so the mirror lands on the grip wherever each
+						// pistol's grip is - normals too, and every winding turned so
+						// the faces still face out.
+						if (bNodeFilter && nv > nvEmit0)
+						{
+							const float* pl = mi.fShowMirror;
+							if (pl[0] * pl[0] + pl[1] * pl[1] + pl[2] * pl[2] > 0.25f)
+							{
+								double cx = 0.0, cy = 0.0, cz = 0.0;
+								for (UINT z = nvEmit0; z < nv; ++z) { cx += out[z].x; cy += out[z].y; cz += out[z].z; }
+								const double fN = (double)(nv - nvEmit0);
+								const float d0 = (float)((pl[0] * cx + pl[1] * cy + pl[2] * cz) / fN) + pl[3];
+								for (UINT z = nvEmit0; z < nv; ++z)
+								{
+									Vtx& t = out[z];
+									const float dd = pl[0] * t.x + pl[1] * t.y + pl[2] * t.z - d0;
+									t.x -= 2.0f * dd * pl[0]; t.y -= 2.0f * dd * pl[1]; t.z -= 2.0f * dd * pl[2];
+									const float dn = pl[0] * t.nx + pl[1] * t.ny + pl[2] * t.nz;
+									t.nx -= 2.0f * dn * pl[0]; t.ny -= 2.0f * dn * pl[1]; t.nz -= 2.0f * dn * pl[2];
+								}
+								for (UINT z = nvEmit0; z + 2 < nv; z += 3) { const Vtx sw = out[z + 1]; out[z + 1] = out[z + 2]; out[z + 2] = sw; }
+							}
+						}
 						{ LARGE_INTEGER q; QueryPerformanceCounter(&q); g_qEmit += q.QuadPart - qEm0.QuadPart; }
 						++nPieces;
 						bDrewAny = true;
@@ -12080,14 +12863,18 @@ void R3D_DrawWorld(const float* pPos, const float* pQuat,
 						if (g_bMulForce && g_pBlendMul) nAddThis = 2;
 						// Adjacent pieces sharing a skin still coalesce, so a model with
 						// one skin costs exactly what it did before.
+						// CHROME over an environment-mapped model's opaque pieces.
+						const int nEnvThis = (g_nModelEnv && nAddThis == 0
+							&& (mi.nFlags & VRMODEL_F_ENVMAP)) ? 1 : 0;
 						if (nv > nvPieceStart)
 						{
 							if (!g_MeshRuns.empty()
+								&& g_MeshRuns.back().nEnv == nEnvThis && g_MeshRuns.back().nLSet == nLSetThis
 								&& g_MeshRuns.back().pSRV == pPieceSkin
 								&& g_MeshRuns.back().fCutRef == fPieceCut
 							&& g_MeshRuns.back().nBlend == nAddThis
 								&& g_MeshRuns.back().fA == fPieceA
-								&& g_MeshRuns.back().nView == ((mi.nFlags & VRMODEL_F_VIEWMODEL) ? 1 : 0)
+								&& g_MeshRuns.back().nView == ((mi.nFlags & VRMODEL_F_MIRRORONLY) ? 2 : (mi.nFlags & VRMODEL_F_VIEWMODEL) ? 1 : (mi.nFlags & 1u) ? 3 : 0)
 								&& g_MeshRuns.back().fLight[0] == fInstLight[0]
 								&& g_MeshRuns.back().fLight[1] == fInstLight[1]
 								&& g_MeshRuns.back().fLight[2] == fInstLight[2]
@@ -12101,11 +12888,14 @@ void R3D_DrawWorld(const float* pPos, const float* pQuat,
 								r.nCount = nv - nvPieceStart; r.pSRV = pPieceSkin;
 								r.fCutRef = fPieceCut; r.nBlend = nAddThis;
 								r.fA = fPieceA;
-								r.nView = (mi.nFlags & VRMODEL_F_VIEWMODEL) ? 1 : 0;
+								r.nView = (mi.nFlags & VRMODEL_F_MIRRORONLY) ? 2 : (mi.nFlags & VRMODEL_F_VIEWMODEL) ? 1 : (mi.nFlags & 1u) ? 3 : 0;	// MIRRORONLY first: a copy of the view weapon for mirrors keeps its viewmodel flag (its arms stay hidden) and is drawn in mirrors only.
 								r.fLight[0] = fInstLight[0];
 								r.fLight[1] = fInstLight[1];
 								r.fLight[2] = fInstLight[2];
 								r.nVB = 0;
+								r.nEnv = nEnvThis; r.nLSet = nLSetThis;
+								static int s_nEnvRunSaid = 0;
+								if (nEnvThis && s_nEnvRunSaid < 3) { ++s_nEnvRunSaid; Log("  R3D MODEL ENVMAP: a chrome run built (%u vertices, view %d)", r.nCount, r.nView); }
 								g_MeshRuns.push_back(r);
 							}
 						}
@@ -12374,7 +13164,12 @@ void R3D_DrawWorld(const float* pPos, const float* pQuat,
 						// additive AND multiply, both of which need what they
 						// sit on top of to be in the target already.
 						if (g_bAddLast && g_MeshRuns[r].nBlend) continue;
-						if (g_bScopePass && g_MeshRuns[r].nView) continue;	// the scope never sees the gun it sits on
+						// The scope never sees the gun it sits on, and a mirror
+						// does not show the view weapon (the retail flag for that
+						// is FLAG2_PORTALINVISIBLE on the first-person model).
+						if (g_bScopePass && g_MeshRuns[r].nView) continue;
+						if (g_bMirrorPass && (g_MeshRuns[r].nView == 1 || g_MeshRuns[r].nView == 3)) continue;
+						if (!g_bMirrorPass && g_MeshRuns[r].nView == 2) continue;
 						BindRunVB(g_MeshRuns[r].nVB, nVBBound, nRegionBytes);
 						g_pCtx->PSSetShaderResources(0, 1, &g_MeshRuns[r].pSRV);
 						// A pass must set its own state, and this one changes it
@@ -12395,10 +13190,7 @@ void R3D_DrawWorld(const float* pPos, const float* pQuat,
 						// skips the fog block; models carry no per-instance fade,
 						// so full strength is -1. See SetOutAlpha.
 						SetOutAlpha(g_MeshRuns[r].nBlend == 2 ? -1.0f : 1.0f);
-						SetModelLight(g_MeshRuns[r].fLight[0],
-									  g_MeshRuns[r].fLight[1],
-									  g_MeshRuns[r].fLight[2],
-									  g_bModelLight ? 1.0f : 0.0f);
+						SetRunLight(g_MeshRuns[r]);
 						if (g_MeshRuns[r].nBlend == 2) ++g_nMeshMulDrawn;
 						if (g_bAlphaTest)
 							// +StubAlphaTest 2 tests EVERY run at 0.5, cut-out or
@@ -12408,6 +13200,7 @@ void R3D_DrawWorld(const float* pPos, const float* pQuat,
 							SetAlphaCut((g_bAlphaTest > 1 && g_MeshRuns[r].fCutRef <= 0.0f)
 										? 0.5f : g_MeshRuns[r].fCutRef);
 						g_pCtx->Draw(g_MeshRuns[r].nCount, g_MeshRuns[r].nStart);
+						if (g_MeshRuns[r].nEnv) ModelEnvDraw(g_MeshRuns[r]);
 					}
 					// Only reachable with +StubAddLast 0, but a pass must leave
 					// the state it found: a multiply run parks lmp.w negative.
@@ -13375,6 +14168,8 @@ void R3D_DrawWorld(const float* pPos, const float* pQuat,
 					// Left for the blended pass at the end of the frame.
 					if (g_bAddLast && g_MeshRuns[r].nBlend) continue;
 					if (g_bScopePass && g_MeshRuns[r].nView) continue;	// the scope never sees the gun it sits on
+					if (g_bMirrorPass && (g_MeshRuns[r].nView == 1 || g_MeshRuns[r].nView == 3)) continue;	// nor does a mirror, nor the body with no head
+					if (!g_bMirrorPass && g_MeshRuns[r].nView == 2) continue;	// the reflection's body: mirrors only
 					BindRunVB(g_MeshRuns[r].nVB, nVBBound, nRegionBytes);
 					g_pCtx->PSSetShaderResources(0, 1, &g_MeshRuns[r].pSRV);
 					// The SECOND mesh draw site. It needs the per-run blend as much as
@@ -13390,10 +14185,7 @@ void R3D_DrawWorld(const float* pPos, const float* pQuat,
 							: g_pBlendOpaque,
 							kNoFactorM, 0xFFFFFFFF);
 					SetOutAlpha(g_MeshRuns[r].nBlend == 2 ? -1.0f : 1.0f);
-					SetModelLight(g_MeshRuns[r].fLight[0],
-								  g_MeshRuns[r].fLight[1],
-								  g_MeshRuns[r].fLight[2],
-								  g_bModelLight ? 1.0f : 0.0f);
+					SetRunLight(g_MeshRuns[r]);
 					if (g_MeshRuns[r].nBlend == 2) ++g_nMeshMulDrawn;
 						if (g_bAlphaTest)
 							// +StubAlphaTest 2 tests EVERY run at 0.5, cut-out or
@@ -13403,6 +14195,7 @@ void R3D_DrawWorld(const float* pPos, const float* pQuat,
 							SetAlphaCut((g_bAlphaTest > 1 && g_MeshRuns[r].fCutRef <= 0.0f)
 										? 0.5f : g_MeshRuns[r].fCutRef);
 					g_pCtx->Draw(g_MeshRuns[r].nCount, g_MeshRuns[r].nStart);
+					if (g_MeshRuns[r].nEnv) ModelEnvDraw(g_MeshRuns[r]);
 				}
 				SetOutAlpha(1.0f);
 				SetModelLight(0.0f, 0.0f, 0.0f, 0.0f);
@@ -13470,7 +14263,7 @@ void R3D_DrawWorld(const float* pPos, const float* pQuat,
 			{
 				const WMBase* pA = g_Batches[b].pSub
 								 ? WMBaseFor(g_Batches[b].pSub) : nullptr;
-				if (!g_Batches[b].bTrans && !g_Batches[b].bGraded
+				if (!g_Batches[b].bTrans && !g_Batches[b].bGraded && !g_Batches[b].bMirror
 					&& !(pA && pA->fAlpha < kOpaqueAlpha)) continue;
 				// NOT A SKY BATCH. The sky pass draws those, from the sky
 				// camera and without depth; the opaque world loop has always
@@ -13479,9 +14272,15 @@ void R3D_DrawWorld(const float* pPos, const float* pQuat,
 				// here as world geometry at the sky model's live position -
 				// 14058 units from where the level file puts it - and from the
 				// opening cutscene that is a thin band at the horizon that
-				// jumped between two places every frame (the headset and the
+				// jumped between two places every frame (headset and the
 				// desk, 22 September). +StubSkyInGlass 1 draws them again.
 				if (g_Batches[b].bSky && !g_bSkyInGlass) { ++g_nSkyGlassSkipped; continue; }
+				// A MIRROR FACE: the one composited this pass already has its
+				// glass laid over the reflection; every other is PLAIN GLASS
+				// here, by its texture's own alpha. Glass whose alpha was all
+				// zero (the loader made it opaque) is invisible glass: skipped.
+				if (g_Batches[b].bMirror
+					&& ((long)b == g_nMirrorCompBatch || g_Batches[b].bZeroAlphaTex)) continue;
 				if (pA && !g_bDrawHiddenWM && (pA->nFlags & VRWORLD_F_INVIS))
 				{ ++g_nHiddenWMSkipped; continue; }		// shattered glass, a blast hole
 				if (!pA && g_Batches[b].pSub && g_bHaveWorldObjs && !g_bDrawUnmatchedWM
@@ -13500,7 +14299,7 @@ void R3D_DrawWorld(const float* pPos, const float* pQuat,
 				// always were. A batch here for its TEXTURE'S alpha is drawn at
 				// 1.0 so that alpha rules - the shader multiplies the two.
 				const float fA = (pA && pA->fAlpha < kOpaqueAlpha) ? GlassAlphaOf(pA->fAlpha)
-							   : g_Batches[b].bGraded ? 1.0f : g_fTransAlpha;
+							   : (g_Batches[b].bGraded || g_Batches[b].bMirror) ? 1.0f : g_fTransAlpha;
 				// A translucent CUT-OUT is both things at once. The Morocco
 				// gate is a grille: its bars are solid metal and its gaps are
 				// holes, and blending alone leaves the gaps as a faint grey
@@ -13556,7 +14355,7 @@ void R3D_DrawWorld(const float* pPos, const float* pQuat,
 					//. A rule by the batch's shape - scroll
 					// only a sheet at least half as tall as it is wide - stopped it
 					// and also FROZE the HQ waterfall, a 144-unit-tall sheet 1472
-					// wide (the headset, the next day; the desk measured its
+					// wide (headset, the next day; the desk measured its
 					// motion at 0.07 grey levels a frame against 1.38 without the
 					// rule). A waterfall is a door or a brush; a sea is a water
 					// volume whose surface a PolyGrid draws (ShowSurface 1). So
@@ -13585,7 +14384,7 @@ void R3D_DrawWorld(const float* pPos, const float* pQuat,
 					if (SUCCEEDED(g_pCtx->Map(g_pCBWater, 0, D3D11_MAP_WRITE_DISCARD, 0, &wmw)))
 					{ memcpy(wmw.pData, w4, sizeof w4); g_pCtx->Unmap(g_pCBWater, 0); }
 				}
-				if (g_Batches[b].bEnvPan && g_pRSWater) g_pCtx->RSSetState(g_pRSWater);
+				if (g_Batches[b].bEnvPan && g_pRSWater) g_pCtx->RSSetState((g_bMirrorPass && g_pRSWaterFront) ? g_pRSWaterFront : g_pRSWater);
 				ID3D11ShaderResourceView* pS2 =
 					BatchSRV(b);
 				g_pCtx->PSSetShaderResources(0, 1, &pS2);
@@ -14215,10 +15014,7 @@ void R3D_DrawWorld(const float* pPos, const float* pQuat,
 					}
 					if (nBlendNow == 3) SetOutAlpha(g_MeshRuns[r].fA);
 					if (g_MeshRuns[r].nBlend == 2) ++g_nMeshMulDrawn;
-					SetModelLight(g_MeshRuns[r].fLight[0],
-								  g_MeshRuns[r].fLight[1],
-								  g_MeshRuns[r].fLight[2],
-								  g_bModelLight ? 1.0f : 0.0f);
+					SetRunLight(g_MeshRuns[r]);
 					g_pCtx->PSSetShaderResources(0, 1, &g_MeshRuns[r].pSRV);
 					if (g_bAlphaTest) SetAlphaCut(g_MeshRuns[r].fCutRef);
 					BindRunVB(g_MeshRuns[r].nVB, nVBBoundA, nOffRing);
@@ -14347,7 +15143,7 @@ void R3D_DrawWorld(const float* pPos, const float* pQuat,
 			s_nEnvSaidAt = g_nFrames; s_nEnvWas = g_nEnvDraws;
 		}
 	}
-	if (g_bLightAddAllow && !bInterface
+	if (g_bLightAddAllow && !bInterface && !g_bMirrorPass
 		&& (g_fLightAdd[0] > 0.002f || g_fLightAdd[1] > 0.002f || g_fLightAdd[2] > 0.002f))
 		DrawLightAdd();
 
@@ -14360,7 +15156,7 @@ void R3D_DrawWorld(const float* pPos, const float* pQuat,
 	// Both eyes have drawn into the multisampled target by the time the second
 	// pass reaches this line; resolving on each pass costs one extra resolve a
 	// frame and keeps this correct if the eye order ever changes.
-	if (!g_bScopePass)
+	if (!g_bScopePass && !g_bMirrorPass)
 	{
 		R3D_ResolveMsaa();
 		PhaseMark(3);		// the multisample resolve
@@ -14394,6 +15190,7 @@ void R3D_SetSkinNameProbe(int b) { g_bSkinNameProbe = b; }
 void R3D_SetSkinFromButes(int b) { g_bSkinFromButes = b; }
 void R3D_SetHideViewArms(int b)  { g_bHideViewArms = b; }
 void R3D_SetDrawBody(int b)      { g_bDrawBody = b; }
+void R3D_SetMirrorBody(int b)    { g_bMirrorBody = b ? 1 : 0; }
 void R3D_SetHideHead(int b)      { g_bHideHead = b; }
 void R3D_SetLMEnable(int b) { g_bLMEnable = b; }
 void R3D_SetAniso(int n)    { g_nAniso = n; }
@@ -15565,6 +16362,21 @@ void R3D_SetEnvWorld(float fRepU, float fRepV, float fFlow)
 { if (fRepU > 0.0f) g_fEnvRepeatU = fRepU; if (fRepV > 0.0f) g_fEnvRepeatV = fRepV; g_fEnvFlow = fFlow; }
 void R3D_SetSkipBatch(int n) { g_nSkipBatch = n; }
 void R3D_SetEnvCoord(float f) { if (f > 0.0f) g_fEnvCoord = f; }
+void R3D_SetModelLightDir(int b) { g_bModelLightDir = b; }
+void R3D_SetModelEnv(int b, float fScale)
+{ g_nModelEnv = b; g_fModelEnvScale = (fScale >= 0.0f) ? fScale : 1.0f; }
+
+// The level's chrome map, from the client (the file it ran "EnvMap" with at
+// the world load, or "" when the game's Chrome option is off).
+extern "C" void __cdecl R3D_PublishModelEnvMap(const char* psz)
+{
+	char sz[128] = "";
+	if (psz) strncpy_s(sz, psz, _TRUNCATE);
+	if (!strcmp(sz, g_szModelEnv)) return;
+	strcpy_s(g_szModelEnv, sz);
+	if (Log) Log("  R3D MODEL ENVMAP: the level's chrome map is %s", sz[0] ? sz : "(none - Chrome is off)");
+}
+
 void R3D_SetEnvMap(int b, float fScale, float fPan)
 { g_bEnvMap = b; g_fEnvScale = (fScale > 0.0f) ? fScale : 0.5f; g_fEnvPan = fPan; }
 
@@ -17567,6 +18379,202 @@ void R3D_DrawScopePass()
 	if (g_nScopePasses <= 3 || (g_nScopePasses % 900) == 0)
 		Log("  R3D SCOPE: pass %ld drawn (%.1f deg)", g_nScopePasses, g_Scope.fFovDeg);
 }
+
+// R3D_DrawMirrorPass - the reflection for one eye, into that eye's mirror
+// texture. Called by the scene hook before each eye's own world pass, with
+// the eye's own camera. Picks the nearest facing mirror face in range and in
+// front of the eye, builds the reflection in its live plane, and runs the
+// world pass with g_bMirrorPass set. See the note at g_bMirrors.
+// ---------------------------------------------------------------------------
+void R3D_DrawMirrorPass(const float* pPos, const float* pQuat,
+						float fFovX, float fFovY, float fNear, float fFar,
+						int nLeft, int nTop, int nRight, int nBottom,
+						const float* pTan4, int nEye)
+{
+	const int ie = (nEye == 1) ? 1 : 0;
+	g_bMirrorThisFrame[ie] = 0;
+	g_nMirrorBatch[ie] = -1;
+	if (!g_bMirrors || !g_pPSMirror || !g_pDev || !g_pCtx || g_bMirrorPass || g_bScopePass) return;
+	if (!g_pVB || !pPos || !pQuat || !g_nMirrorFaces) return;
+	if (nRight <= nLeft || nBottom <= nTop) return;
+	// One picture for both eyes: the right eye samples the left's.
+	if (!g_bMirrorStereo && ie == 1) { g_bMirrorThisFrame[1] = g_bMirrorThisFrame[0]; g_nMirrorBatch[1] = g_nMirrorBatch[0]; return; }
+	if (nEye < 0 && ie == 0) { /* no eye latched yet: the left slot */ }
+
+	// ---- which mirror ------------------------------------------------------
+	float rr[3], uu[3], ff[3];
+	QuatBasis(pQuat, rr, uu, ff);
+	int    nBest = -1;
+	float  fBestDist = 1e30f;
+	float  fBestPl[4] = { 0, 0, 0, 0 };
+	for (size_t b = 0; b < g_Batches.size(); ++b)
+	{
+		const Batch& bt = g_Batches[b];
+		if (!bt.bMirror) continue;
+		const WMBase* pA = bt.pSub ? WMBaseFor(bt.pSub) : nullptr;
+		if (pA && !g_bDrawHiddenWM && (pA->nFlags & VRWORLD_F_INVIS)) continue;
+		// The plane and the centre, where the engine has the model NOW: a
+		// mirror on a door swings with it. Same map as the opaque loop's.
+		float n[3] = { bt.fMirPlane[0], bt.fMirPlane[1], bt.fMirPlane[2] };
+		float c[3] = { bt.fMirCentre[0], bt.fMirCentre[1], bt.fMirCentre[2] };
+		const WMBase* pWM = (g_bWorldXform && bt.pSub) ? pA : nullptr;
+		if (pWM && pWM->bMoved)
+		{
+			float B[9];
+			for (int r2 = 0; r2 < 3; ++r2)
+				for (int c2 = 0; c2 < 3; ++c2)
+				{
+					float v2 = 0.0f;
+					for (int k2 = 0; k2 < 3; ++k2) v2 += pWM->lr[r2 * 3 + k2] * pWM->r[c2 * 3 + k2];
+					B[r2 * 3 + c2] = v2;
+				}
+			float n2[3], c2v[3];
+			for (int r2 = 0; r2 < 3; ++r2)
+			{
+				n2[r2]  = B[r2*3+0]*n[0] + B[r2*3+1]*n[1] + B[r2*3+2]*n[2];
+				c2v[r2] = B[r2*3+0]*(c[0] - pWM->p[0]) + B[r2*3+1]*(c[1] - pWM->p[1])
+						+ B[r2*3+2]*(c[2] - pWM->p[2]) + pWM->lp[r2];
+			}
+			memcpy(n, n2, sizeof n); memcpy(c, c2v, sizeof c);
+		}
+		const float d = n[0]*c[0] + n[1]*c[1] + n[2]*c[2];
+		// Facing: the eye on the front side of the plane.
+		const float fSide = n[0]*pPos[0] + n[1]*pPos[1] + n[2]*pPos[2] - d;
+		if (fSide <= 1.0f) continue;
+		const float dx = c[0] - pPos[0], dy = c[1] - pPos[1], dz = c[2] - pPos[2];
+		const float fDist = sqrtf(dx*dx + dy*dy + dz*dz);
+		if (fDist > g_fMirrorRange) continue;
+		// In front of the eye, allowing the face's own extent.
+		float fRad = 64.0f;
+		if (b < g_BatchBox.size())
+		{
+			const BatchBox& bx = g_BatchBox[b];
+			const float ex = bx.mx[0] - bx.mn[0], ey = bx.mx[1] - bx.mn[1], ez = bx.mx[2] - bx.mn[2];
+			fRad = 0.5f * sqrtf(ex*ex + ey*ey + ez*ez);
+		}
+		const float fwd = dx*ff[0] + dy*ff[1] + dz*ff[2];
+		if (fwd < -fRad) continue;
+		if (fDist < fBestDist)
+		{
+			fBestDist = fDist; nBest = (int)b;
+			memcpy(g_fMirrorCentreDbg, c, sizeof g_fMirrorCentreDbg);
+			fBestPl[0] = n[0]; fBestPl[1] = n[1]; fBestPl[2] = n[2]; fBestPl[3] = d;
+		}
+	}
+	if (nBest < 0) return;
+
+	// ---- the target, at the eye's shape and a fraction of its size --------
+	int w = (int)((float)(nRight - nLeft) * g_fPxX * g_fMirrorScale + 0.5f);
+	int h = (int)((float)(nBottom - nTop) * g_fPxY * g_fMirrorScale + 0.5f);
+	if (w < 64) w = 64;
+	if (h < 64) h = 64;
+	if (w != g_nMirrorTexW || h != g_nMirrorTexH || !g_pMirrorTex[0] || !g_pMirrorTex[1] || !g_pMirrorDSV)
+	{
+		for (int e = 0; e < 2; ++e)
+		{
+			if (g_pMirrorSRV[e]) { g_pMirrorSRV[e]->Release(); g_pMirrorSRV[e] = nullptr; }
+			if (g_pMirrorRTV[e]) { g_pMirrorRTV[e]->Release(); g_pMirrorRTV[e] = nullptr; }
+			if (g_pMirrorTex[e]) { g_pMirrorTex[e]->Release(); g_pMirrorTex[e] = nullptr; }
+		}
+		if (g_pMirrorDSV) { g_pMirrorDSV->Release(); g_pMirrorDSV = nullptr; }
+		if (g_pMirrorDS)  { g_pMirrorDS->Release();  g_pMirrorDS  = nullptr; }
+		D3D11_TEXTURE2D_DESC td = {};
+		td.Width = (UINT)w; td.Height = (UINT)h; td.MipLevels = 1; td.ArraySize = 1;
+		td.Format = DXGI_FORMAT_B8G8R8A8_UNORM; td.SampleDesc.Count = 1;
+		td.Usage = D3D11_USAGE_DEFAULT;
+		td.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+		HRESULT hr = S_OK;
+		for (int e = 0; e < 2 && SUCCEEDED(hr); ++e)
+		{
+			hr = g_pDev->CreateTexture2D(&td, nullptr, &g_pMirrorTex[e]);
+			if (SUCCEEDED(hr)) hr = g_pDev->CreateRenderTargetView(g_pMirrorTex[e], nullptr, &g_pMirrorRTV[e]);
+			if (SUCCEEDED(hr)) hr = g_pDev->CreateShaderResourceView(g_pMirrorTex[e], nullptr, &g_pMirrorSRV[e]);
+		}
+		D3D11_TEXTURE2D_DESC dd = td;
+		dd.Format = DXGI_FORMAT_D32_FLOAT; dd.BindFlags = D3D11_BIND_DEPTH_STENCIL;
+		if (SUCCEEDED(hr)) hr = g_pDev->CreateTexture2D(&dd, nullptr, &g_pMirrorDS);
+		if (SUCCEEDED(hr)) hr = g_pDev->CreateDepthStencilView(g_pMirrorDS, nullptr, &g_pMirrorDSV);
+		Log("  R3D MIRROR: %dx%d targets per eye %s (hr %08lX), scale %.2f of the eye",
+			w, h, SUCCEEDED(hr) ? "created" : "FAILED", (unsigned long)hr, g_fMirrorScale);
+		if (FAILED(hr)) { g_bMirrors = 0; return; }
+		g_nMirrorTexW = w; g_nMirrorTexH = h;
+	}
+
+	// ---- the reflection, row-vector form: p' = p - 2 (n.p - d) n ----------
+	{
+		const float nx = fBestPl[0], ny = fBestPl[1], nz = fBestPl[2], d = fBestPl[3];
+		float R[16] = {
+			1.0f - 2.0f*nx*nx, -2.0f*nx*ny,       -2.0f*nx*nz,       0.0f,
+			-2.0f*ny*nx,       1.0f - 2.0f*ny*ny, -2.0f*ny*nz,       0.0f,
+			-2.0f*nz*nx,       -2.0f*nz*ny,       1.0f - 2.0f*nz*nz, 0.0f,
+			2.0f*d*nx,         2.0f*d*ny,         2.0f*d*nz,         1.0f };
+		memcpy(g_fMirrorR, R, sizeof g_fMirrorR);
+		memcpy(g_fMirrorPlaneLive, fBestPl, sizeof g_fMirrorPlaneLive);
+	}
+
+	g_bMirrorPass = 1;
+	g_nMirrorEye = ie;
+	const long long nDrawn0 = g_nWorldDrawn;
+	R3D_DrawWorld(pPos, pQuat, fFovX, fFovY, fNear, fFar, nLeft, nTop, nRight, nBottom, pTan4, nEye, 0);
+	g_bMirrorPass = 0;
+	// +StubMirrorDebug 1: what the pass drew, and its picture, once.
+	if (g_nMirrorDebug && g_nMirrorPasses == (long)(g_nMirrorDebug > 0 ? g_nMirrorDebug : -g_nMirrorDebug))
+	{
+		const bool bOk = DumpTex2D(g_pMirrorTex[ie], "mirror-tex.bmp");
+		Log("  R3D MIRROR DEBUG: pass %ld drew %lld world vertices from eye (%.0f %.0f %.0f) looking (%+.2f %+.2f %+.2f); texture %s mirror-tex.bmp",
+			g_nMirrorPasses, g_nWorldDrawn - nDrawn0, pPos[0], pPos[1], pPos[2], ff[0], ff[1], ff[2],
+			bOk ? "dumped to" : "NOT dumped to");
+	}
+	g_bMirrorThisFrame[ie] = 1;
+	g_nMirrorBatch[ie] = nBest;
+	++g_nMirrorPasses;
+	if (ie == 0) ++g_nMirrorFrames;
+	if (g_nMirrorPasses <= 4 || (g_nMirrorPasses % 1800) == 0)
+		Log("  R3D MIRROR: pass %ld eye %d - face %d at %.0f units, plane (%.3f %.3f %.3f) d %.1f, eye (%.0f %.0f %.0f) looking (%+.2f %+.2f %+.2f); %ld composites so far",
+			g_nMirrorPasses, ie, nBest, fBestDist, fBestPl[0], fBestPl[1], fBestPl[2], fBestPl[3],
+			pPos[0], pPos[1], pPos[2], ff[0], ff[1], ff[2], g_nMirrorComposites);
+}
+
+// THE PAUSED WORLD'S CAMERA for one eye - the same pose, rotation, field and
+// frustum R3D_DrawWorld substitutes when a menu is up over a loaded level - so
+// the mirror pass can draw that world's reflection too. Without it a paused
+// frame drew no reflection and the mirror kept the last one, looked up by
+// screen position: it slid with the head.
+bool R3D_PausedWorldPose(int nEye, const float* pSceneQuat, float* pPos, float* pQuat,
+						 float* pFov2, float* pNear, float* pFar, float* pTan4, int* pbTan)
+{
+	const int ie = (nEye == 1) ? 1 : 0;
+	if (!g_pVB || g_bInterfaceOnly || !(s_bWCam[ie] || s_bWCam[0])) return false;
+	const int iu = s_bWCam[ie] ? ie : 0;
+	memcpy(pPos, s_fWPos[iu], sizeof s_fWPos[iu]);
+	const bool bSceneTurned =
+		pSceneQuat && (fabsf(pSceneQuat[0]) > 0.0005f || fabsf(pSceneQuat[1]) > 0.0005f
+					|| fabsf(pSceneQuat[2]) > 0.0005f
+					|| fabsf(fabsf(pSceneQuat[3]) - 1.0f) > 0.0005f);
+	memcpy(pQuat, bSceneTurned ? pSceneQuat : s_fWQuat[iu], 4 * sizeof(float));
+	pFov2[0] = s_fWFov[iu][0]; pFov2[1] = s_fWFov[iu][1];
+	*pNear = s_fWNear[iu]; *pFar = s_fWFar[iu];
+	*pbTan = s_bWTan[iu];
+	if (s_bWTan[iu]) memcpy(pTan4, s_fWTan[iu], sizeof s_fWTan[iu]);
+	return true;
+}
+
+// A REFLECTION IS GOOD FOR ONE FRAME. The flag was cleared only when the
+// world was torn down, so a frame that drew no mirror pass composited the
+// last one made, however stale.
+bool R3D_MirrorReady(int nEye) { return g_bMirrorThisFrame[(nEye == 1) ? 1 : 0] != 0; }
+void R3D_MirrorFrameEnd()
+{
+	g_bMirrorThisFrame[0] = g_bMirrorThisFrame[1] = 0;
+	g_nMirrorBatch[0] = g_nMirrorBatch[1] = -1;
+}
+
+void R3D_SetMirrors(int b)          { g_bMirrors = b ? 1 : 0; }
+void R3D_SetMirrorDebug(int n)      { g_nMirrorDebug = n; }
+void R3D_SetMirrorScale(float f)    { if (f > 0.05f && f <= 2.0f) g_fMirrorScale = f; }
+void R3D_SetMirrorRange(float f)    { if (f > 0.0f) g_fMirrorRange = f; }
+void R3D_SetMirrorStereo(int b)     { g_bMirrorStereo = b ? 1 : 0; }
+void R3D_SetMirrorOverlay(float f)  { if (f >= 0.0f && f <= 1.0f) g_fMirrorOverlay = f; }
 
 // R3D_PublishPrims - the client's effects for this frame. See VRShared.h.
 // ---------------------------------------------------------------------------

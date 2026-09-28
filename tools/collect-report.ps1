@@ -1,5 +1,5 @@
 <#
-    NOLF1 VR - collect a report. Double-click "Collect report.bat" after a
+    No One Lives Forever VR - collect a report. Double-click "Collect report.bat" after a
     session that went wrong and send the zip it puts on your Desktop.
 
     It holds the logs of the most recent sessions and the game's settings file.

@@ -16,6 +16,6 @@
 #define NOLFVR_VER_STRING  "1.0.0"
 
 #define NOLFVR_COMPANY     "Game Or Die"
-#define NOLFVR_PRODUCT     "NOLF1 VR"
-#define NOLFVR_COPYRIGHT   "NOLF1 VR - a free mod. No One Lives Forever (C) 2000 Monolith Productions."
+#define NOLFVR_PRODUCT     "No One Lives Forever VR"
+#define NOLFVR_COPYRIGHT   "No One Lives Forever VR - a free mod. No One Lives Forever (C) 2000 Monolith Productions."
 #define NOLFVR_COMMENTS    "A VR mod for No One Lives Forever GOTY 1.004. No game data is included."

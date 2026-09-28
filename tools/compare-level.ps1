@@ -36,6 +36,12 @@ param(
 $ErrorActionPreference = 'Stop'
 $Root = Split-Path $PSScriptRoot -Parent
 $Game = Join-Path $Root 'game'
+# NEVER KILL A GAME THIS SCRIPT DID NOT START. A running lithtech.exe is most
+# likely a player's session; stop and say so instead of closing it.
+if (Get-Process lithtech -ErrorAction SilentlyContinue) {
+    Write-Host '  STOPPED: the game is already running (a player may be in it). Close it first; nothing was touched.' -ForegroundColor Red
+    exit 1
+}
 # THE PLAYER'S SETTINGS ARE NOT THE DESK'S. The engine writes autoexec.cfg
 # when the game closes, and this harness closes it gracefully - so a run
 # that passed +soundenable 0 left the next headset session with the effects
@@ -58,8 +64,12 @@ $rez = @('NOLF.rez','NOLF2.rez','NOLFdll.rez','NOLFl.rez','custom',
          'Nolfu003.rez','Nolfcres003.rez','NolfGoty.rez','Modernizer.rez')
 
 function Run-One([string]$renderer, [string]$title, [string]$png, [string[]]$extra) {
-    Get-Process lithtech -ErrorAction SilentlyContinue | ForEach-Object { try { $_.Kill() } catch {} }
-    Start-Sleep -Milliseconds 600
+    # The previous arm's game is gone (it is waited for below), so a
+    # lithtech.exe now is one this script did not start. Leave it alone.
+    if (Get-Process lithtech -ErrorAction SilentlyContinue) {
+        Write-Host "  STOPPED before the $renderer arm: another lithtech.exe is running (a player may be in it). It was left alone." -ForegroundColor Red
+        return $false
+    }
 
     $a = @('-windowtitle', $title)
     foreach ($r in $rez) { $a += @('-rez', $r) }
@@ -93,7 +103,8 @@ function Run-One([string]$renderer, [string]$title, [string]$png, [string[]]$ext
         Write-Host ("    " + $_) -ForegroundColor DarkGray }
     try { $p.CloseMainWindow() | Out-Null } catch {}
     Start-Sleep -Seconds 2
-    Get-Process lithtech -ErrorAction SilentlyContinue | ForEach-Object { try { $_.Kill() } catch {} }
+    # Only the process this script started.
+    if (-not $p.HasExited) { try { $p.Kill() } catch {}; $p.WaitForExit(5000) | Out-Null }
     Start-Sleep -Milliseconds 600
     return (Test-Path $png)
 }
