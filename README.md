@@ -1,22 +1,24 @@
 # No One Lives Forever VR
 
-**No One Lives Forever (2000) in room-scale VR** - native stereo, head tracking
+No One Lives Forever (2000) in room-scale VR: native stereo, head tracking
 and motion controls, through OpenXR.
 
 This is a mod. It ships no game content: you supply your own copy of NOLF.
+
+**Watch the video:** [No One Lives Forever in VR (it's a swinging 60s spy game)](https://youtu.be/IrHUTnWPAw8)
 
 ---
 
 ## Install
 
-1. Unzip this release into a folder of its own - on your Desktop or in a games
-   folder, anywhere except `Program Files` (setup needs to write there).
+1. Unzip this release into a folder of its own, on your Desktop or in a games
+   folder: anywhere except `Program Files` (setup needs to write there).
 
-2. Double-click **`Setup.bat`**.
+2. Double-click `Setup.bat`.
 
    It finds your NOLF and copies it into the `game` folder beside it. It looks
-   in the usual places on every drive. If it cannot find it, **drag your game
-   folder onto `Setup.bat`**, or drag both GOTY disc images (`.iso`) onto it at
+   in the usual places on every drive. If it cannot find it, drag your game
+   folder onto `Setup.bat`, or drag both GOTY disc images (`.iso`) onto it at
    once, and it builds the game from the discs. A `.zip` of an installed folder
    works too.
 
@@ -30,7 +32,7 @@ This is a mod. It ships no game content: you supply your own copy of NOLF.
    or Meta Quest Link. With a SteamVR headset (a Steam Frame, an Index), start
    SteamVR first and then the game, and the game uses SteamVR by itself.
 
-4. Double-click **`Play No One Lives Forever VR.bat`**, then put the headset on.
+4. Double-click `Play No One Lives Forever VR.bat`, then put the headset on.
 
 If the headset is not connected yet, a notice says the game is waiting for it
 and closes by itself when it connects. After a minute with no headset, the game
@@ -38,12 +40,12 @@ closes and says what to do.
 
 The desktop shows a steady view from your right eye while you play, for
 streaming or recording: it follows your turns but not the small movements of
-your head, and keeps the horizon level (**Options > VR > Steady desktop
-view** turns it off for the plain eye). Alt-tab freely: the game keeps running
+your head, and keeps the horizon level (Options > VR > Steady desktop
+view turns it off for the plain eye). Alt-tab freely: the game keeps running
 in the headset.
 
 **What you need:** *No One Lives Forever*, Game of the Year edition, patched to
-1.004 - the release with the four bonus missions; a PC VR headset with an
+1.004 (the release with the four bonus missions); a PC VR headset with an
 OpenXR runtime (developed on a Quest 3 over
 [Virtual Desktop](https://www.vrdesktop.net/), and played on a Steam Frame over
 SteamVR; Meta Quest Link provides OpenXR too, untested); and Windows 10 or 11,
@@ -53,10 +55,10 @@ SteamVR; Meta Quest Link provides OpenXR too, untested); and Windows 10 or 11,
 drag your previous version's `game` folder onto its `Setup.bat`. Your saves and
 settings come with it; the new VR files are kept.
 
-If something goes wrong, double-click **`Collect report.bat`**. It saves a zip
+If something goes wrong, double-click `Collect report.bat`. It saves a zip
 of the latest logs on your Desktop to send with your report.
 
-Nothing needs to be installed for any of this - no Python, no runtime. Setup is
+Nothing needs to be installed for any of this: no Python, no runtime. Setup is
 PowerShell, which Windows already has.
 
 ---
@@ -70,34 +72,34 @@ Right hand aims and fires; the gun sits where your controller is.
 | left stick | move |
 | right stick | turn |
 | right trigger | fire |
-| **X** (left) | use / activate |
-| **Y** (left) | reload |
-| **A** (right) | jump |
-| **B** (right) | duck |
+| X (left) | use / activate |
+| Y (left) | reload |
+| A (right) | jump |
+| B (right) | duck |
 | left grip | run |
 | left trigger | flashlight |
-| right stick click | weapon wheel - click, point with the stick, trigger or click to take |
+| right stick click | weapon wheel: click, point with the stick, trigger or click to take |
 | menu button (left) | the menu |
-| left stick click, in the menu | **photo mode** - hides the menu so you can look around the paused world and take your own screenshot; click again to bring it back |
-| hold the Meta button | recenter (also **Options > VR > Recenter**) |
+| left stick click, in the menu | photo mode: hides the menu so you can look around the paused world and take your own screenshot; click again to bring it back |
+| hold the Meta button | recenter (also Options > VR > Recenter) |
 
 A red dot marks where the gun is pointing, on the surface or the body it will
-hit. A **green reticle** in the middle of your view means there is something
-there you can use: press **X** and it is used, even if your hand is pointing a
+hit. A green reticle in the middle of your view means there is something
+there you can use: press X and it is used, even if your hand is pointing a
 little off it. Through a scope, the shot leaves from the scope itself, so
 anything you can see in it you can hit. Getting shot rumbles the controller on
 the side the shot came from.
 
 **Two hands on a pistol:** with a pistol out (P38, revolver, Contender, Luger),
-bring your other hand to the gun and hold its grip - a second hand appears on
+bring your other hand to the gun and hold its grip, and a second hand appears on
 the pistol's grip. While it is there, that grip does not make you run. It is
 for the look and feel only; aiming is the same either way.
 
 **Left-handed? Options > VR > Leftorium (left-handed)** swaps the hands: the gun
 and its trigger go in your left hand (drawn as a left-handed gun), the
 flashlight in your right, and the hand buttons above swap sides with them. The
-sticks stay where they are - move on the left, turn on the right - unless you
-also turn on **Swap sticks**, which works with or without the Leftorium. The
+sticks stay where they are (move on the left, turn on the right) unless you
+also turn on Swap sticks, which works with or without the Leftorium. The
 menu button stays where it is, and the handlebars on the vehicles work either
 way.
 
@@ -105,20 +107,20 @@ way.
 
 | control | does |
 |---|---|
-| **X** (left), near the vehicle | get on / get off |
+| X (left), near the vehicle | get on / get off |
 | right trigger | throttle |
 | left trigger | brake, and reverse when stopped |
-| left stick left/right | steer - analog: a small push is a gentle turn |
+| left stick left/right | steer, analog: a small push is a gentle turn |
 | both grips, then turn your hands | steer with the handlebars, like a real bike |
-| **A** (right) | wheelie (motorcycle only), one per press |
+| A (right) | wheelie (motorcycle only), one per press |
 
 ## Options
 
-In the game: **Options > VR** has Recenter, **Show body** and **See yourself in
-mirrors** (both on), the Leftorium (left-handed play),
+In the game: Options > VR has Recenter, Show body and See yourself in
+mirrors (both on), the Leftorium (left-handed play),
 snap or smooth turning, turn speed, steering with both grips, the gun's size
 and how far it follows your hand, the aim dot, VR captions, head bob, weapon
-sway, large menu text, and **Resolution %**: how sharp the world is, as a
+sway, large menu text, and Resolution %: how sharp the world is, as a
 percentage of your headset's own resolution (100 by default). It applies the
 next time you start the game; lower it if an older graphics card cannot hold
 90 fps.
@@ -153,7 +155,7 @@ guns' metallic sheen; characters and objects lit by the lamps around them; a
 second hand on pistols; the steady desktop view; the red dot centered in a scope;
 and SteamVR headsets such as the Steam Frame.
 
-**Known open**, honestly:
+**Known issues:**
 
 - The game has not been played end to end in VR. Individual missions have.
 - In cutscenes, characters sometimes slide into place just after a camera cut.
@@ -170,7 +172,7 @@ and SteamVR headsets such as the Steam Frame.
 - Multiplayer is untested and not a goal.
 
 **Setup switches on features the game leaves off.** NOLF reads its options
-through console variables, and one that does not EXIST reads as zero - so an
+through console variables, and one that does not exist reads as zero, so an
 install whose Options pages have never been opened runs with gore, water
 animation and the sky switched off, and nothing says so. The installer repairs
 that from your own retail values and never changes a setting you have already
@@ -189,34 +191,34 @@ art. Add `-PlainMenu` to the launcher to pin the ordinary one.
 `"Play No One Lives Forever VR.bat" -God` starts a session with god mode, every weapon and every
 mission unlocked. It lasts for that session only.
 
-Bug reports with a level name and a screenshot are worth a great deal.
+Bug reports with a level name and a screenshot help the most.
 
 ---
 
 ## What this is built on
 
-Every link in the chain, because none of this starts here:
+Every project this stands on:
 
 - **Monolith Productions** made *No One Lives Forever* (2000), and released the
   **NOLF Source Code v1.003** in 2001. The rights today sit with
   Nightdive/Ziggurat.
 - **[haekb/nolf1-modernizer](https://github.com/haekb/nolf1-modernizer)** is the
-  modernized client this forked - it fixes the mouse, the framerate and the
+  modernized client this forked. It fixes the mouse, the framerate and the
   resolution handling that 2000 could not have anticipated. The VR work is a
   branch of that, and it would not have been startable without it.
 - **[DR-89/fear-vr](https://github.com/DR-89/fear-vr)** is where the technique
   comes from: render the world twice per frame, once per eye, and leave the
-  simulation alone. No line of its code is here - F.E.A.R. is a different engine
-  and a different renderer - but the idea and its proof are theirs.
+  simulation alone. No line of its code is here (F.E.A.R. is a different engine
+  and a different renderer), but the idea and its proof are theirs.
 - The optional HD texture packs are the community's ESRGAN upscales. They are
   **not included** and never will be; download them from their authors.
 
 ## Building from source
 
-Nothing needs building to play - the release zip is complete. To build it
+Nothing needs building to play: the release zip is complete. To build it
 yourself:
 
-1. Install **Visual Studio 2019 Build Tools** with the C++ desktop workload
+1. Install Visual Studio 2019 Build Tools with the C++ desktop workload
    (the v142 toolset; the client and the renderer are 32-bit, the host 64-bit).
 2. Clone this repository, then the game client into `src\nolf1-modernizer`:
    it is the `nolfvr` branch of the nolf1-modernizer fork on the same GitHub
@@ -232,17 +234,17 @@ yourself:
 ## License
 
 The client shell is derived from the NOLF Source Code v1.003 and, like
-nolf1-modernizer before it, **remains bound by the EULA that the source release
-was distributed under.** That license is non-commercial: the source was put out
+nolf1-modernizer before it, remains bound by the EULA that the source release
+was distributed under. That license is non-commercial: the source was put out
 by Monolith in 2001 for people to modify their own copy of the game with, and
 nothing here is offered on any broader basis.
 
-A caution rather than a disclaimer: the `readme.txt` shipped with the v1.003
+Note: the `readme.txt` shipped with the v1.003
 source lists `V. END USER LISCENCE AGREEMENT (EULA)` in its contents and then
-prints the introduction again in its place, so **that file does not actually
-contain the terms**, and neither this repository nor nolf1-modernizer carries a
-copy of them. The obligation is real regardless - it was accepted when the
-source was obtained - but if you need to read the text, get it from the
+prints the introduction again in its place, so that file does not actually
+contain the terms, and neither this repository nor nolf1-modernizer carries a
+copy of them. The obligation is real regardless (it was accepted when the
+source was obtained), but if you need to read the text, get it from the
 original distribution rather than from anything in this tree.
 
 The renderer (`host/renstub`), the OpenXR host (`host/`) and the tools are our
@@ -255,3 +257,7 @@ No game data is included in this repository or in any release archive.
 
 Two third-party files ship in the archive, `SDL2.dll` (zlib license) and the
 OpenXR loader (MIT); their notices are in `THIRD-PARTY-NOTICES.md`.
+
+---
+
+**Get an email when the next port ships:** follow [Game Or Die on Patreon](https://www.patreon.com/cw/GameOrDie) for free. Ports are never paywalled.
