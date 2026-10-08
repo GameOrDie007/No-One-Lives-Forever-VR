@@ -91,3 +91,11 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
+
+## Cate's hand model (`game\gdh\cate_hand_l.gdh`, `cate_hand_r.gdh`)
+
+Built by this project from the hand models of Godot XR Tools
+(https://github.com/GodotVR/godot-xr-tools), made by DigitalN8m4r3 and dedicated
+to the public domain under CC0 1.0 Universal. CC0 asks for nothing; the credit is
+ours to give. Reshaped here into a woman's hand, with our own finger poses and
+our own painted glove (`game\gdh\cate_glove.tga`).

@@ -36,6 +36,38 @@ $rez = @(
     $RezName
 )
 
+# PLAYERS' HD TEXTURE PACKS: every .rez in game\custom, by name, after the
+# retail archives and before the VR client, so a pack's textures replace the
+# game's and nothing replaces our CShell. The engine's `-rez custom` mount of
+# the folder itself loads nothing, so each file is
+# named. A flat client in there (Modernizer, Widescreen) is skipped: it would
+# replace the VR one. The renderer reads the same -rez list, so it sees the
+# packs too.
+#
+# NO AUTOMATIC TEXTURE CAP. A cap halves the sharpest textures, so it is
+# opt-in: -Set StubTexMaxDim=1024 hands the graphics card each texture above
+# 1024 one mip level down, everything else still seeing the full size.
+$customDir = Join-Path $Game 'custom'
+$customRez = @()
+if (Test-Path -LiteralPath $customDir) {
+    # SUBFOLDERS TOO: a pack's whole folder dropped into custom is the natural
+    # thing to do. Every .rez below custom counts,
+    # ordered by its path so a pack's own numbering still decides.
+    $customFull = (Get-Item -LiteralPath $customDir).FullName.TrimEnd('\')
+    foreach ($f in (Get-ChildItem -LiteralPath $customDir -Filter '*.rez' -File -Recurse | Sort-Object FullName)) {
+        $relPath = $f.FullName.Substring($customFull.Length + 1)
+        if ($f.Name -match '^(modernizer|widescreen)') {
+            Write-Host ("textures: custom\{0} skipped - a flat game client, it would replace the VR one" -f $relPath) -ForegroundColor Yellow
+            continue
+        }
+        $customRez += ('custom\' + $relPath)
+    }
+}
+if ($customRez.Count) {
+    $rez = @($rez[0..($rez.Count - 2)]) + $customRez + @($rez[-1])
+    Write-Host ("textures: {0} pack file(s) from game\custom: {1}" -f $customRez.Count, (($customRez | ForEach-Object { Split-Path $_ -Leaf }) -join ', ')) -ForegroundColor Cyan
+}
+
 # THE UPSCALED GUN TEXTURES, LAST, SO THEY WIN. packs\sub-guns.rez is the
 # GUNS subset of the ESRGAN pack - 78 files, 285 MB, player-view skins from
 # 256x256 to 1024x1024 - and it was the one subset the bisect found clean

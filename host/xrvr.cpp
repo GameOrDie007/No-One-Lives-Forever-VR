@@ -244,18 +244,31 @@ bool XrVr::CreateInstance()
 	std::vector<XrExtensionProperties> props(nExtCount, { XR_TYPE_EXTENSION_PROPERTIES });
 	if (nExtCount) xrEnumerateInstanceExtensionProperties(nullptr, nExtCount, &nExtCount, props.data());
 
+	// XR_VALVE_frame_controller_interaction: the Steam Frame's own controller
+	// profile. Not in the Khronos headers, so named here. Same rule as the
+	// refresh extension, asked for only when the runtime lists it, so Virtual
+	// Desktop and every other runtime never see the name.
+	static const char* kFrameExt = "XR_VALVE_frame_controller_interaction";
 	m_bHaveRefreshExt = false;
+	m_bHaveFrameExt = false;
 	for (uint32_t i = 0; i < nExtCount; ++i)
+	{
 		if (strcmp(props[i].extensionName, XR_FB_DISPLAY_REFRESH_RATE_EXTENSION_NAME) == 0)
 			m_bHaveRefreshExt = true;
+		if (strcmp(props[i].extensionName, kFrameExt) == 0)
+			m_bHaveFrameExt = true;
+	}
 
-	const char* exts[2] = { XR_KHR_D3D11_ENABLE_EXTENSION_NAME,
-							XR_FB_DISPLAY_REFRESH_RATE_EXTENSION_NAME };
+	const char* exts[3] = { XR_KHR_D3D11_ENABLE_EXTENSION_NAME, nullptr, nullptr };
+	uint32_t nExts = 1;
+	if (m_bHaveRefreshExt) exts[nExts++] = XR_FB_DISPLAY_REFRESH_RATE_EXTENSION_NAME;
+	if (m_bHaveFrameExt)   exts[nExts++] = kFrameExt;
+	Msg("Steam Frame controller profile: %s", m_bHaveFrameExt ? "offered - enabled" : "not offered by this runtime");
 
 	XrInstanceCreateInfo ici{ XR_TYPE_INSTANCE_CREATE_INFO };
 	strcpy_s(ici.applicationInfo.applicationName, "No One Lives Forever VR");
 	ici.applicationInfo.apiVersion = XR_API_VERSION_1_0;
-	ici.enabledExtensionCount = m_bHaveRefreshExt ? 2 : 1;
+	ici.enabledExtensionCount = nExts;
 	ici.enabledExtensionNames = exts;
 	if (!m_bHaveRefreshExt)
 		Msg("note: runtime has no display-refresh-rate extension - the headset rate is whatever it is set to");
@@ -465,14 +478,29 @@ bool XrVr::CreateSwapchains(int nWidth, int nHeight)
 		// reason. The cost scales with the DESTINATION pixels, so it grows as
 		// the render resolution grows - exactly when there is least room for it.
 		const float kMaxScale = 1.25f;
-		int nW = (int)((float)nWidth  * kMaxScale);
-		int nH = (int)((float)nHeight * kMaxScale);
-		if (nW > m_nRecommendedW) nW = m_nRecommendedW;
-		if (nH > m_nRecommendedH) nH = m_nRecommendedH;
-
-		Msg("swapchain %dx%d, enlarging %dx%d with Catmull-Rom (%.2fx; runtime wanted %dx%d)",
-			nW, nH, nWidth, nHeight, (float)nW / (float)nWidth,
-			m_nRecommendedW, m_nRecommendedH);
+		// ONE SCALE FOR BOTH AXES. Width and height used to be capped at the
+		// runtime's request separately. With the eye rendered at the headset's
+		// height and a runtime asking for a much wider eye (Virtual Desktop with
+		// its field of view widened: 5468x3264 against our 3014x3259), the
+		// height hit its cap and the width did not: 3014x3259 went into a
+		// 3767x3264 swapchain, boxed, and was declared across the whole of it -
+		// every eye stretched 25% sideways about its own centre, and the world
+		// doubled (a player's report, v1.1). The image's aspect is what the
+		// declared field of view is built from; it must survive the enlargement.
+		float fScale = kMaxScale;
+		if ((float)m_nRecommendedW / (float)nWidth  < fScale) fScale = (float)m_nRecommendedW / (float)nWidth;
+		if ((float)m_nRecommendedH / (float)nHeight < fScale) fScale = (float)m_nRecommendedH / (float)nHeight;
+		int nW = nWidth, nH = nHeight;
+		if (fScale > 1.02f)
+		{
+			nW = (int)((float)nWidth  * fScale);
+			nH = (int)((float)nHeight * fScale);
+			Msg("swapchain %dx%d, enlarging %dx%d with Catmull-Rom (%.2fx; runtime wanted %dx%d)",
+				nW, nH, nWidth, nHeight, fScale, m_nRecommendedW, m_nRecommendedH);
+		}
+		else
+			Msg("swapchain %dx%d as rendered: the runtime's %dx%d leaves no room to enlarge both axes alike (%.3fx) - its own filter covers the rest",
+				nW, nH, m_nRecommendedW, m_nRecommendedH, fScale);
 		m_nWidth  = nW;
 		m_nHeight = nH;
 	}
@@ -687,6 +715,10 @@ bool XrVr::PumpEvents()
 				Msg("runtime recentred its LOCAL space - recenter offsets reset");
 				if (m_bHaveRec) SetBodyYaw(m_fWantYaw, m_nYawMode);
 			}
+		}
+		else if (ev.type == XR_TYPE_EVENT_DATA_INTERACTION_PROFILE_CHANGED)
+		{
+			NoteInteractionProfile();
 		}
 		else if (ev.type == XR_TYPE_EVENT_DATA_SESSION_STATE_CHANGED)
 		{
@@ -1620,6 +1652,23 @@ bool XrVr::CreateActions()
 		{ &m_aStickX,    "stickx",    XR_ACTION_TYPE_FLOAT_INPUT   },
 		{ &m_aStickY,    "sticky",    XR_ACTION_TYPE_FLOAT_INPUT   },
 		{ &m_aHaptic,    "haptic",    XR_ACTION_TYPE_VIBRATION_OUTPUT },
+		// The Steam Frame's extra buttons. Created on every runtime and
+		// bound only on the Frame's profile: an unbound action simply reads
+		// false. Names distinct, as above.
+		{ &m_aPadX,      "padx",      XR_ACTION_TYPE_BOOLEAN_INPUT },
+		{ &m_aPadY,      "pady",      XR_ACTION_TYPE_BOOLEAN_INPUT },
+		{ &m_aDpadUp,    "dpadup",    XR_ACTION_TYPE_BOOLEAN_INPUT },
+		{ &m_aDpadDown,  "dpaddown",  XR_ACTION_TYPE_BOOLEAN_INPUT },
+		{ &m_aDpadLeft,  "dpadleft",  XR_ACTION_TYPE_BOOLEAN_INPUT },
+		{ &m_aDpadRight, "dpadright", XR_ACTION_TYPE_BOOLEAN_INPUT },
+		{ &m_aShoulder,  "shoulder",  XR_ACTION_TYPE_BOOLEAN_INPUT },
+		{ &m_aView,      "view",      XR_ACTION_TYPE_BOOLEAN_INPUT },
+		{ &m_aPadMenu,   "padmenu",   XR_ACTION_TYPE_BOOLEAN_INPUT },
+		// Game Or Die Hands: the palm (grip pose) and the finger/thumb touch
+		// sensors the articulated hands pose from.
+		{ &m_aGripPose,     "palm",         XR_ACTION_TYPE_POSE_INPUT    },
+		{ &m_aTriggerTouch, "triggertouch", XR_ACTION_TYPE_BOOLEAN_INPUT },
+		{ &m_aThumbTouch,   "thumbtouch",   XR_ACTION_TYPE_BOOLEAN_INPUT },
 	};
 
 	for (const Def& d : defs)
@@ -1662,15 +1711,50 @@ bool XrVr::CreateActions()
 		{ m_aHaptic,    Path(m_Instance, "/user/hand/right/output/haptic")          },
 	};
 
+	// GAME OR DIE HANDS, suggested WITH the bindings above (one profile, one
+	// suggestion), and dropped again if the runtime refuses the lot, so a
+	// runtime that dislikes one of these paths still gets every control the
+	// game had before. All are in the Oculus Touch profile of the spec.
+	const XrActionSuggestedBinding hands[] = {
+		{ m_aGripPose,     Path(m_Instance, "/user/hand/left/input/grip/pose")          },
+		{ m_aGripPose,     Path(m_Instance, "/user/hand/right/input/grip/pose")         },
+		{ m_aTriggerTouch, Path(m_Instance, "/user/hand/left/input/trigger/touch")      },
+		{ m_aTriggerTouch, Path(m_Instance, "/user/hand/right/input/trigger/touch")     },
+		{ m_aThumbTouch,   Path(m_Instance, "/user/hand/left/input/thumbstick/touch")   },
+		{ m_aThumbTouch,   Path(m_Instance, "/user/hand/left/input/thumbrest/touch")    },
+		{ m_aThumbTouch,   Path(m_Instance, "/user/hand/left/input/x/touch")            },
+		{ m_aThumbTouch,   Path(m_Instance, "/user/hand/left/input/y/touch")            },
+		{ m_aThumbTouch,   Path(m_Instance, "/user/hand/right/input/thumbstick/touch")  },
+		{ m_aThumbTouch,   Path(m_Instance, "/user/hand/right/input/thumbrest/touch")   },
+		{ m_aThumbTouch,   Path(m_Instance, "/user/hand/right/input/a/touch")           },
+		{ m_aThumbTouch,   Path(m_Instance, "/user/hand/right/input/b/touch")           },
+	};
+	std::vector<XrActionSuggestedBinding> all(binds, binds + sizeof(binds) / sizeof(binds[0]));
+	all.insert(all.end(), hands, hands + sizeof(hands) / sizeof(hands[0]));
+
 	XrInteractionProfileSuggestedBinding sug{ XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING };
 	sug.interactionProfile = Path(m_Instance, "/interaction_profiles/oculus/touch_controller");
-	sug.suggestedBindings = binds;
-	sug.countSuggestedBindings = (uint32_t)(sizeof(binds) / sizeof(binds[0]));
+	sug.suggestedBindings = all.data();
+	sug.countSuggestedBindings = (uint32_t)all.size();
 	if (XR_FAILED(xrSuggestInteractionProfileBindings(m_Instance, &sug)))
 	{
-		Msg("input: the runtime rejected the Oculus Touch bindings");
-		return false;
+		Msg("input: the runtime refused the hands' palm/touch bindings - suggesting the game's own without them");
+		sug.suggestedBindings = binds;
+		sug.countSuggestedBindings = (uint32_t)(sizeof(binds) / sizeof(binds[0]));
+		if (XR_FAILED(xrSuggestInteractionProfileBindings(m_Instance, &sug)))
+		{
+			Msg("input: the runtime rejected the Oculus Touch bindings");
+			return false;
+		}
 	}
+
+	// THE FRAME'S OWN PROFILE, suggested on its own call: one bad path makes
+	// the runtime reject a whole suggestion, and the Touch one above must
+	// survive anything that happens here. "shoulder" was "bumper" before
+	// SteamVR 2.17.10, so a refusal is retried with the old name.
+	if (m_bHaveFrameExt && !SuggestFrameBindings(false) && !SuggestFrameBindings(true)
+		&& !SuggestFrameBindings(false, false) && !SuggestFrameBindings(true, false))
+		Msg("input: the runtime rejected the Steam Frame bindings both ways - SteamVR's own Touch remap applies");
 
 	XrSessionActionSetsAttachInfo att{ XR_TYPE_SESSION_ACTION_SETS_ATTACH_INFO };
 	att.countActionSets = 1;
@@ -1692,12 +1776,95 @@ bool XrVr::CreateActions()
 			Msg("input: aim space for hand %d failed", h);
 			return false;
 		}
+		// The palm's space. Not fatal: without it the hands fall back to the
+		// aim pose and a fixed offset.
+		sci.action = m_aGripPose;
+		if (XR_FAILED(xrCreateActionSpace(m_Session, &sci, &m_GripSpace[h])))
+		{
+			m_GripSpace[h] = XR_NULL_HANDLE;
+			Msg("input: palm (grip) space for hand %d failed - the hands use the aim pose", h);
+		}
 	}
 
 	m_bActionsReady = true;
 	Msg("input: Quest 3 controllers bound (aim pose, trigger, grip, A/B/X/Y,"
 		" stick click, stick X/Y)");
 	return true;
+}
+
+bool XrVr::SuggestFrameBindings(bool bOldShoulderName, bool bHands)
+{
+	const char* pszShoulderL = bOldShoulderName ? "/user/hand/left/input/bumper/click"  : "/user/hand/left/input/shoulder/click";
+	const char* pszShoulderR = bOldShoulderName ? "/user/hand/right/input/bumper/click" : "/user/hand/right/input/shoulder/click";
+	const XrActionSuggestedBinding binds[] = {
+		{ m_aAim,       Path(m_Instance, "/user/hand/left/input/aim/pose")          },
+		{ m_aAim,       Path(m_Instance, "/user/hand/right/input/aim/pose")         },
+		{ m_aTrigger,   Path(m_Instance, "/user/hand/left/input/trigger/value")     },
+		{ m_aTrigger,   Path(m_Instance, "/user/hand/right/input/trigger/value")    },
+		{ m_aGrip,      Path(m_Instance, "/user/hand/left/input/squeeze/value")     },
+		{ m_aGrip,      Path(m_Instance, "/user/hand/right/input/squeeze/value")    },
+		{ m_aThumb,     Path(m_Instance, "/user/hand/left/input/thumbstick/click")  },
+		{ m_aThumb,     Path(m_Instance, "/user/hand/right/input/thumbstick/click") },
+		{ m_aStickX,    Path(m_Instance, "/user/hand/left/input/thumbstick/x")      },
+		{ m_aStickX,    Path(m_Instance, "/user/hand/right/input/thumbstick/x")     },
+		{ m_aStickY,    Path(m_Instance, "/user/hand/left/input/thumbstick/y")      },
+		{ m_aStickY,    Path(m_Instance, "/user/hand/right/input/thumbstick/y")     },
+		{ m_aHaptic,    Path(m_Instance, "/user/hand/left/output/haptic")           },
+		{ m_aHaptic,    Path(m_Instance, "/user/hand/right/output/haptic")          },
+		// The Touch-style bits, placed as SteamVR's own remap places them:
+		// right A and left D-pad down are primary, right B and left D-pad up
+		// are secondary, View is the menu. The client re-lays the Frame from
+		// the bits below when it knows the Frame is bound.
+		{ m_aPrimary,   Path(m_Instance, "/user/hand/right/input/a/click")          },
+		{ m_aPrimary,   Path(m_Instance, "/user/hand/left/input/dpad_down/click")   },
+		{ m_aSecondary, Path(m_Instance, "/user/hand/right/input/b/click")          },
+		{ m_aSecondary, Path(m_Instance, "/user/hand/left/input/dpad_up/click")     },
+		{ m_aMenu,      Path(m_Instance, "/user/hand/left/input/view/click")        },
+		// The Frame's own.
+		{ m_aPadX,      Path(m_Instance, "/user/hand/right/input/x/click")          },
+		{ m_aPadY,      Path(m_Instance, "/user/hand/right/input/y/click")          },
+		{ m_aDpadUp,    Path(m_Instance, "/user/hand/left/input/dpad_up/click")     },
+		{ m_aDpadDown,  Path(m_Instance, "/user/hand/left/input/dpad_down/click")   },
+		{ m_aDpadLeft,  Path(m_Instance, "/user/hand/left/input/dpad_left/click")   },
+		{ m_aDpadRight, Path(m_Instance, "/user/hand/left/input/dpad_right/click")  },
+		{ m_aShoulder,  Path(m_Instance, pszShoulderL)                              },
+		{ m_aShoulder,  Path(m_Instance, pszShoulderR)                              },
+		{ m_aView,      Path(m_Instance, "/user/hand/left/input/view/click")        },
+		{ m_aPadMenu,   Path(m_Instance, "/user/hand/right/input/menu/click")       },
+	};
+
+	// Game Or Die Hands: the palm only (the Frame's touch sensors are not
+	// mapped here); retried without it if the runtime refuses.
+	std::vector<XrActionSuggestedBinding> all(binds, binds + sizeof(binds) / sizeof(binds[0]));
+	if (bHands)
+	{
+		all.push_back({ m_aGripPose, Path(m_Instance, "/user/hand/left/input/grip/pose")  });
+		all.push_back({ m_aGripPose, Path(m_Instance, "/user/hand/right/input/grip/pose") });
+	}
+	XrInteractionProfileSuggestedBinding sug{ XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING };
+	sug.interactionProfile = Path(m_Instance, "/interaction_profiles/valve/frame_controller_valve");
+	sug.suggestedBindings = all.data();
+	sug.countSuggestedBindings = (uint32_t)all.size();
+	const XrResult r = xrSuggestInteractionProfileBindings(m_Instance, &sug);
+	Msg("input: Steam Frame bindings (%s%s) -> %s (%d)", bOldShoulderName ? "bumper" : "shoulder",
+		bHands ? ", palm" : "", XR_SUCCEEDED(r) ? "accepted" : "REJECTED", (int)r);
+	return XR_SUCCEEDED(r);
+}
+
+// Which profile the runtime actually bound. Asked when the runtime says it
+// changed, so the log says what a player's controllers really are, and the
+// client is told whether the Frame's own buttons exist.
+void XrVr::NoteInteractionProfile()
+{
+	if (m_Session == XR_NULL_HANDLE || !m_bActionsReady) return;
+	XrInteractionProfileState st{ XR_TYPE_INTERACTION_PROFILE_STATE };
+	if (XR_FAILED(xrGetCurrentInteractionProfile(m_Session, m_HandPath[1], &st))) return;
+	char sz[XR_MAX_PATH_LENGTH] = "(none)";
+	uint32_t n = 0;
+	if (st.interactionProfile != XR_NULL_PATH)
+		xrPathToString(m_Instance, st.interactionProfile, sizeof(sz), &n, sz);
+	m_bFrameProfile = (strstr(sz, "frame_controller") != nullptr);
+	Msg("input: right hand bound to %s%s", sz, m_bFrameProfile ? " - the Steam Frame layout is live" : "");
 }
 
 void XrVr::Pulse(int nHand, float fAmp, float fMs)
@@ -1751,6 +1918,31 @@ void XrVr::UpdateActions()
 			else hs.bActive = false;
 		}
 
+		// The palm, in this hand's aim space, and the touch sensors.
+		hs.bGripValid = false;
+		if (hs.bActive && m_GripSpace[h] != XR_NULL_HANDLE)
+		{
+			XrSpaceLocation gl{ XR_TYPE_SPACE_LOCATION };
+			if (XR_SUCCEEDED(xrLocateSpace(m_GripSpace[h], m_AimSpace[h],
+					m_FrameState.predictedDisplayTime, &gl)) &&
+				(gl.locationFlags & XR_SPACE_LOCATION_ORIENTATION_VALID_BIT) &&
+				(gl.locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT))
+			{
+				hs.aimToGrip = gl.pose;
+				hs.bGripValid = true;
+			}
+		}
+		{
+			XrActionStateBoolean tt{ XR_TYPE_ACTION_STATE_BOOLEAN }, th{ XR_TYPE_ACTION_STATE_BOOLEAN };
+			gi.action = m_aTriggerTouch;
+			const bool bT = XR_SUCCEEDED(xrGetActionStateBoolean(m_Session, &gi, &tt)) && tt.isActive;
+			gi.action = m_aThumbTouch;
+			const bool bH = XR_SUCCEEDED(xrGetActionStateBoolean(m_Session, &gi, &th)) && th.isActive;
+			hs.bTouchKnown   = bT || bH;
+			hs.bTriggerTouch = bT && tt.currentState;
+			hs.bThumbTouch   = bH && th.currentState;
+		}
+
 		XrActionStateFloat fs{ XR_TYPE_ACTION_STATE_FLOAT };
 		gi.action = m_aTrigger;
 		if (XR_SUCCEEDED(xrGetActionStateFloat(m_Session, &gi, &fs)) && fs.isActive)
@@ -1783,6 +1975,15 @@ void XrVr::UpdateActions()
 			{ m_aSecondary, (uint32_t)kBtnSecondary },
 			{ m_aThumb,     (uint32_t)kBtnThumbClick },
 			{ m_aMenu,      (uint32_t)kBtnMenu },
+			{ m_aPadX,      (uint32_t)kBtnPadX },
+			{ m_aPadY,      (uint32_t)kBtnPadY },
+			{ m_aDpadUp,    (uint32_t)kBtnDpadUp },
+			{ m_aDpadDown,  (uint32_t)kBtnDpadDown },
+			{ m_aDpadLeft,  (uint32_t)kBtnDpadLeft },
+			{ m_aDpadRight, (uint32_t)kBtnDpadRight },
+			{ m_aShoulder,  (uint32_t)kBtnShoulder },
+			{ m_aView,      (uint32_t)kBtnView },
+			{ m_aPadMenu,   (uint32_t)kBtnPadMenu },
 		};
 		for (const BtnDef& b : btns)
 		{
@@ -1794,6 +1995,7 @@ void XrVr::UpdateActions()
 				hs.nButtons |= b.bit;
 			}
 		}
+		if (m_bFrameProfile) hs.nButtons |= kBtnFrame;
 	}
 
 	if (!m_bLoggedHands && (m_Hands[0].bActive || m_Hands[1].bActive))

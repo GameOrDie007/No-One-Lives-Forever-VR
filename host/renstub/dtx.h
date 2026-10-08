@@ -153,6 +153,7 @@ void     Dtx_SetLog(R3D_LogFn pfnLog);
 // 0 disables it. The stock game never exceeds 512; an upscale pack does, and
 // 2048x2048 uncompressed skins are what exhausts a 32-bit process.
 void     Dtx_SetMaxDim(int nMax);
+int      Dtx_GetMaxDim();
 long     Dtx_CappedCount();
 
 void     Dtx_Flush();			// release everything; safe at any time

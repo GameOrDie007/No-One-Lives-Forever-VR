@@ -1177,6 +1177,31 @@ namespace
 	unsigned long long g_nLogStart = 0;
 }
 
+bool Stub_SurfaceBits(void* h, const void** ppKey, const void** ppBits, int* pnPitch, int* pnW, int* pnH)
+{
+	// THE CLIENT'S HSURFACE IS THE ENGINE'S RECORD, not ours: the surface we
+	// made for it is a pointer inside it. Found once by looking for a word
+	// that is one of our surfaces, then read from the same place.
+	static int s_nOff = -2;
+	StubSurface* p = Check(h);
+	if (!p && h && !IsBadReadPtr(h, 64))
+	{
+		const uint32_t* w = (const uint32_t*)h;
+		if (s_nOff >= 0) p = Check((void*)(uintptr_t)w[s_nOff]);
+		else if (s_nOff == -2)
+		{
+			for (int i = 0; i < 16 && !p; ++i)
+				if ((p = Check((void*)(uintptr_t)w[i])) != nullptr) s_nOff = i;
+			if (s_nOff == -2) s_nOff = -1;
+			Log("  R3D SURFACE PANEL: the client's surface %p holds ours at word %d%s", h, s_nOff,
+				s_nOff < 0 ? " - NOT FOUND, no panel can be drawn" : "");
+		}
+	}
+	if (!p || !p->pBits || !p->nWidth || !p->nHeight) return false;
+	*ppKey = p; *ppBits = p->pBits; *pnPitch = p->nPitch; *pnW = (int)p->nWidth; *pnH = (int)p->nHeight;
+	return true;
+}
+
 // --------------------------------------------------------------------------
 // The 37 slots. LTRESULT-style calls return 0 for LT_OK; LTBOOL-style calls
 // return 1 for LTTRUE. Both were taken from the real renderer where they could

@@ -12,6 +12,7 @@ static int g_bDumpAlphaAsGrey = 0;
 #include "rezfs.h"
 #include "spranim.h"
 namespace { void PrimReleaseAll(); }
+static ID3D11ShaderResourceView* HandsTexture(const char* pszPath);	// Game Or Die Hands, below
 // A picture's size by name, where the name may be a SPRITE: the world walk
 // needs the width and height to place a polygon's texture coordinates, and
 // a .spr answers with its first frame. The HQ waterfall was dropped as
@@ -1026,6 +1027,16 @@ static void SetAlphaCut(float f)
 	int  g_bHavePrims = 0;
 	int  g_bPrims = 1;				// +StubPrims 0
 	double g_fNowSec = 0.0;			// the pass's clock, for animated textures
+	// A SCROLL'S PHASE, WRAPPED IN DOUBLE BEFORE IT BECOMES A FLOAT. The clock
+	// is seconds since Windows started, so after a few days of uptime rate * t
+	// is in the tens of thousands and a float of it moves in steps of
+	// 1/128 of a repeat or worse: the HQ waterfall stuttered and crawled at an
+	// uneven pace on a PC that had been up for days, and ran smooth on one
+	// just rebooted. The textures wrap, so only the fraction matters.
+	inline float ScrollPhase(double fRate, double fSec)
+	{
+		return (float)fmod(fRate * fSec, 1.0);
+	}
 	long g_nPrimRunsDrawn = 0, g_nPrimVertsDrawn = 0, g_nPrimNoTex = 0;
 	int  g_bHaveSprites = 0;
 	int  g_bSpriteProbe = 0;
@@ -2378,6 +2389,18 @@ static void SetAlphaCut(float f)
 	// +StubHideViewArms. The view model's baked-in arms, which cannot be
 	// right once its origin is at the controller.
 	int  g_bHideViewArms = 1;
+	// GAME OR DIE HANDS: the client's posed, skinned hands (R3D_PublishHands),
+	// copied here and appended to the model mesh when it is built. g_nHandsTick
+	// is when they arrived, so a client that stops publishing takes them away.
+	VRHandsFrame* g_pHands = nullptr;
+	DWORD g_nHandsTick = 0;
+	// A publish that says ours are the hands: the view weapon's own Hand*
+	// pieces are not drawn at all, not even the mirrored support hand.
+	bool HandsHideGunHands()
+	{
+		return g_pHands && g_pHands->nRuns && (g_pHands->nFlags & VRHANDS_F_HIDEGUNHANDS)
+			&& GetTickCount() - g_nHandsTick < 500;
+	}
 	// +StubBody / +StubHideHead. Draw the player's own model, minus the
 	// head you are looking out of.
 	int  g_bDrawBody = 0;
@@ -5374,12 +5397,57 @@ void R3D_NoteTexture(uint32_t pKey, uint32_t pData)
 	if (g_bTexFromFile && MakeFileTexture(pKey) >= 0) return;
 	++g_nTexFromHeap;
 
+	// THE SAME SIZE CAP AS THE FILE PATH (Dtx_GetMaxDim, +StubTexMaxDim): a
+	// texture above it goes to the GPU from a smaller level of the engine's
+	// own mip chain, which it keeps beside level 0: one {w, h, pixels, pitch}
+	// entry per level, 24 bytes apart. Each level is checked to be exactly
+	// half the last before it is used; anything else and the full size is
+	// kept. The entry keeps the full size (e.fW/e.fH below), because world
+	// UVs are divided by it.
+	uint32_t gw = w, gh = h, gPitch = nPitch;
+	uintptr_t gPix = (uintptr_t)pp;
+	{
+		const int nCap = Dtx_GetMaxDim();
+		if (nCap > 0 && (w > (uint32_t)nCap || h > (uint32_t)nCap))
+		{
+			for (int k = 1; k < 8 && (gw > (uint32_t)nCap || gh > (uint32_t)nCap); ++k)
+			{
+				const uint8_t* mk = m + 24 * k;
+				if (IsBadReadPtr(mk, 16)) break;
+				const uint32_t kw = *(const uint32_t*)(mk + 0);
+				const uint32_t kh = *(const uint32_t*)(mk + 4);
+				const uint32_t kp = *(const uint32_t*)(mk + 8);
+				const uint32_t kpitch = *(const uint32_t*)(mk + 12);
+				if (kw != (w >> k) || kh != (h >> k) || !kp || !kw || !kh) break;
+				uint32_t kPitch, kBytes;
+				if (fmt == DXGI_FORMAT_B8G8R8A8_UNORM)
+				{
+					if (kpitch != kw * 4) break;
+					kPitch = kpitch; kBytes = kpitch * kh;
+				}
+				else
+				{
+					if ((kw % 4) || (kh % 4)) break;
+					kPitch = (kw / 4) * 8; kBytes = (kw / 4) * (kh / 4) * 8;
+				}
+				if (IsBadReadPtr((const void*)(uintptr_t)kp, kBytes)) break;
+				gw = kw; gh = kh; gPitch = kPitch; gPix = (uintptr_t)kp;
+			}
+			if (gw != w)
+			{
+				static long s_nSaidHeapCap = 0;
+				if (s_nSaidHeapCap++ < 8)
+					Log("  R3D: engine texture %ux%u capped to %ux%u for the GPU (+StubTexMaxDim %d)", w, h, gw, gh, nCap);
+			}
+		}
+	}
+
 	D3D11_TEXTURE2D_DESC td{};
-	td.Width = w; td.Height = h; td.MipLevels = 1; td.ArraySize = 1;
+	td.Width = gw; td.Height = gh; td.MipLevels = 1; td.ArraySize = 1;
 	td.Format = fmt; td.SampleDesc.Count = 1;
 	td.Usage = D3D11_USAGE_IMMUTABLE; td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
 	D3D11_SUBRESOURCE_DATA sd{};
-	sd.pSysMem = (const void*)(uintptr_t)pp; sd.SysMemPitch = nPitch;
+	sd.pSysMem = (const void*)gPix; sd.SysMemPitch = gPitch;
 
 	ID3D11Texture2D* pT = nullptr;
 	if (FAILED(g_pDev->CreateTexture2D(&td, &sd, &pT))) return;
@@ -8229,6 +8297,21 @@ namespace
 				if (g_bScopePass || !g_pScopeSRV) continue;
 				pSRV = g_pScopeSRV;
 			}
+			// A PANEL WEARING A SURFACE THE CLIENT DREW (the wrist display):
+			// the handle is in nObject. Not in the scope's picture.
+			else if (r.nFlags & VRPRIM_F_SURFACE)
+			{
+				if (g_bScopePass) continue;
+				const void* pBits = nullptr; const void* pKey = nullptr; int nPitch = 0, nW = 0, nH = 0;
+				void* hSurf = (void*)(uintptr_t)r.nObject;
+				static int s_nSaidRun = 0;
+				if (s_nSaidRun < 1) { ++s_nSaidRun; Log("  R3D SURFACE PANEL: first run, client surface %p", hSurf); }
+				if (!Stub_SurfaceBits(hSurf, &pKey, &pBits, &nPitch, &nW, &nH)) continue;
+				pSRV = R2D_SurfaceSRV(pKey, pBits, nPitch, nW, nH);
+				if (!pSRV) continue;
+				static int s_nSaidSurf = 0;
+				if (s_nSaidSurf < 3) { ++s_nSaidSurf; Log("  R3D SURFACE PANEL: %dx%d surface %p drawn in the world", nW, nH, hSurf); }
+			}
 			else if (!(r.nFlags & VRPRIM_F_NOTEX))
 			{
 				const int nA = SprAnim_Get(g_pDev, r.szTex);
@@ -8358,7 +8441,6 @@ static void EnvDraw(size_t b, const float* pQuat, const float* pPos)
 	if (!g_pCBEnv || !g_pBlendAdd || !g_Batches[b].pEnvSRV) return;
 	float er[3], eu[3], ef[3];
 	QuatBasis(pQuat, er, eu, ef);
-	const float t = (float)g_fNowSec;
 	const float kF[4] = { 0, 0, 0, 0 };
 	// WATER MOVES, THE REST DOES NOT. A still surface keeps the fine map
 	// (0.5: the whole map across a full swing of the reflection) it had
@@ -8378,7 +8460,7 @@ static void EnvDraw(size_t b, const float* pQuat, const float* pPos)
 	// shift measure had its sign backwards).
 	// In map units per second now (StubEnvPan100). A feature at a fixed v
 	// sits higher on the face as the pan grows, so DOWN is the pan shrinking.
-	const float fPanV  = bPan ? -g_fEnvPan * t : 0.0f;
+	const float fPanV  = bPan ? ScrollPhase(-g_fEnvPan, g_fNowSec) : 0.0f;
 	// WATER MODULATES; everything else ADDS, attenuated by its own light.
 	// Modulating every map was tried on 19 September and was wrong: the HQ's
 	// white dome lights went from flat 255 to 204-242 facets, because a
@@ -9483,10 +9565,9 @@ void R3D_DrawWorld(const float* pPos, const float* pQuat,
 	{
 		float er[3], eu[3], ef[3];
 		QuatBasis(pQuat, er, eu, ef);
-		const float t = (float)g_fNowSec;
 		const float e[16] = { er[0], er[1], er[2], g_fEnvCoord, eu[0], eu[1], eu[2], 0,
 							  pPos ? pPos[0] : 0.0f, pPos ? pPos[1] : 0.0f, pPos ? pPos[2] : 0.0f, 0,
-							  0.0f, -g_fEnvPan * t, g_fEnvScale, 0.0f };
+							  0.0f, ScrollPhase(-g_fEnvPan, g_fNowSec), g_fEnvScale, 0.0f };
 		D3D11_MAPPED_SUBRESOURCE em{};
 		if (SUCCEEDED(g_pCtx->Map(g_pCBEnv, 0, D3D11_MAP_WRITE_DISCARD, 0, &em)))
 		{ memcpy(em.pData, e, sizeof e); g_pCtx->Unmap(g_pCBEnv, 0); }
@@ -11643,13 +11724,14 @@ void R3D_DrawWorld(const float* pPos, const float* pQuat,
 						// is drawn filtered to the triangles of those nodes (see
 						// VRModelInst::nShowNodes) - the left hand alone, on the gun.
 						bool bNodeFilter = false;
-						if ((mi.nFlags & VRMODEL_F_VIEWMODEL) && g_bHideViewArms
+						const bool bOurHands = HandsHideGunHands();
+						if ((mi.nFlags & VRMODEL_F_VIEWMODEL) && (g_bHideViewArms || bOurHands)
 							&& !(mi.nFlags & VRMODEL_F_VEHICLE)
 							&& MemKind(pc + 0x48, 32) == 2
 							&& _strnicmp((const char*)(uintptr_t)(pc + 0x48),
 										 "Hand", 4) == 0)
 						{
-							if (mi.nShowNodes[0] | mi.nShowNodes[1] | mi.nShowNodes[2] | mi.nShowNodes[3])
+							if (!bOurHands && (mi.nShowNodes[0] | mi.nShowNodes[1] | mi.nShowNodes[2] | mi.nShowNodes[3]))
 								bNodeFilter = true;
 							else { ++g_nViewArmsHidden; continue; }
 						}
@@ -12866,6 +12948,23 @@ void R3D_DrawWorld(const float* pPos, const float* pQuat,
 						// CHROME over an environment-mapped model's opaque pieces.
 						const int nEnvThis = (g_nModelEnv && nAddThis == 0
 							&& (mi.nFlags & VRMODEL_F_ENVMAP)) ? 1 : 0;
+						// GAME OR DIE HANDS, desk check: where the view weapon's own hand is DRAWN
+						// (the centre of its Hand* piece's vertices), to set against the joints
+						// the client fits ours to. Every 300 frames, only when that piece is drawn.
+						if ((mi.nFlags & VRMODEL_F_VIEWMODEL) && nv > nvPieceStart
+							&& MemKind(pc + 0x48, 32) == 2
+							&& _strnicmp((const char*)(uintptr_t)(pc + 0x48), "Hand", 4) == 0)
+						{
+							static long s_nHandPieceSaid = 0;
+							if ((s_nHandPieceSaid++ % 300) == 0)
+							{
+								double c[3] = { 0, 0, 0 };
+								for (UINT q = nvPieceStart; q < nv; ++q) { c[0] += out[q].x; c[1] += out[q].y; c[2] += out[q].z; }
+								const double n = (double)(nv - nvPieceStart);
+								Log("  R3D HANDS: the gun's own piece '%.16s' drawn centred at (%.1f %.1f %.1f), %u vertices",
+									(const char*)(uintptr_t)(pc + 0x48), c[0] / n, c[1] / n, c[2] / n, nv - nvPieceStart);
+							}
+						}
 						if (nv > nvPieceStart)
 						{
 							if (!g_MeshRuns.empty()
@@ -13100,6 +13199,47 @@ void R3D_DrawWorld(const float* pPos, const float* pQuat,
 							g_nSkinBytes += nBytes;
 						}
 						{ LARGE_INTEGER q; QueryPerformanceCounter(&q); g_qStore += q.QuadPart - qSt0.QuadPart; }
+					}
+				}
+
+				// GAME OR DIE HANDS: the client's hands, already world space. A run
+				// each, drawn with the view weapon (nView 1: both eyes, never the
+				// scope or a mirror), lit by the light where the hand is.
+				if (g_pHands && g_pHands->nRuns && GetTickCount() - g_nHandsTick < 500)
+				{
+					for (uint32_t hr = 0; hr < g_pHands->nRuns && hr < 2; ++hr)
+					{
+						const VRHandRun& run = g_pHands->runs[hr];
+						if (run.nStart + run.nCount > g_pHands->nVerts || nv + run.nCount > nMaxV) continue;
+						ID3D11ShaderResourceView* pTex = HandsTexture(run.szTex);
+						if (!pTex) continue;
+						const UINT nv0 = nv;
+						for (uint32_t k = 0; k < run.nCount; ++k)
+						{
+							const VRHandVert& s = g_pHands->verts[run.nStart + k];
+							Vtx& o = out[nv++];
+							o.x = s.fPos[0]; o.y = s.fPos[1]; o.z = s.fPos[2];
+							o.nx = s.fNrm[0]; o.ny = s.fNrm[1]; o.nz = s.fNrm[2];
+							o.u = s.fUV[0]; o.v = s.fUV[1];
+							o.lu = -1.0f; o.lv = -1.0f;		// no lightmap: the model shade
+						}
+						MeshRun r; r.nStart = nv0; r.nCount = nv - nv0; r.pSRV = pTex;
+						r.fCutRef = 0.0f; r.nBlend = 0; r.fA = 1.0f; r.nView = 1;
+						r.fLight[0] = r.fLight[1] = r.fLight[2] = 1.0f;
+						if (g_bModelLight && !g_bInterfaceOnly)
+						{
+							LGridAt(run.fLightAt, r.fLight);
+							LightDirectAt(run.fLightAt, r.fLight);
+						}
+						r.nVB = 0; r.nEnv = 0; r.nLSet = -1;
+						g_MeshRuns.push_back(r);
+						static int s_nHandsSaid = 0;
+						if (s_nHandsSaid < 4)
+						{
+							++s_nHandsSaid;
+							Log("  R3D HANDS: run %u, %u vertices, %s, light %.2f %.2f %.2f",
+								hr, r.nCount, run.szTex, r.fLight[0], r.fLight[1], r.fLight[2]);
+						}
 					}
 				}
 
@@ -14378,7 +14518,7 @@ void R3D_DrawWorld(const float* pPos, const float* pQuat,
 						}
 					}
 					const float fFlow = (g_Batches[b].bEnvPan && bTall)
-									  ? g_fWaterFlow * (float)g_fNowSec : 0.0f;
+									  ? ScrollPhase(g_fWaterFlow, g_fNowSec) : 0.0f;
 					const float w4[4] = { fFlow, 0.0f, 0.0f, 0.0f };
 					D3D11_MAPPED_SUBRESOURCE wmw{};
 					if (SUCCEEDED(g_pCtx->Map(g_pCBWater, 0, D3D11_MAP_WRITE_DISCARD, 0, &wmw)))
@@ -18575,6 +18715,77 @@ void R3D_SetMirrorScale(float f)    { if (f > 0.05f && f <= 2.0f) g_fMirrorScale
 void R3D_SetMirrorRange(float f)    { if (f > 0.0f) g_fMirrorRange = f; }
 void R3D_SetMirrorStereo(int b)     { g_bMirrorStereo = b ? 1 : 0; }
 void R3D_SetMirrorOverlay(float f)  { if (f >= 0.0f && f <= 1.0f) g_fMirrorOverlay = f; }
+
+// GAME OR DIE HANDS. The glove texture: a 24- or 32-bit uncompressed .tga,
+// relative to the game folder, made by our own tools. Loaded once per path,
+// mip-mapped here. A missing file is logged once and the hand is not drawn.
+// ---------------------------------------------------------------------------
+static ID3D11ShaderResourceView* HandsTexture(const char* pszPath)
+{
+	static std::map<std::string, ID3D11ShaderResourceView*> s_Tex;
+	if (!g_pDev || !g_pCtx || !pszPath || !pszPath[0]) return nullptr;
+	auto it = s_Tex.find(pszPath);
+	if (it != s_Tex.end()) return it->second;
+	ID3D11ShaderResourceView* pSRV = nullptr;
+	s_Tex[pszPath] = nullptr;
+	FILE* f = fopen(pszPath, "rb");
+	std::vector<unsigned char> d;
+	if (f)
+	{
+		fseek(f, 0, SEEK_END); const long n = ftell(f); fseek(f, 0, SEEK_SET);
+		if (n > 18) { d.resize((size_t)n); if (fread(d.data(), 1, (size_t)n, f) != (size_t)n) d.clear(); }
+		fclose(f);
+	}
+	const int w = d.size() > 18 ? d[12] | (d[13] << 8) : 0, h = d.size() > 18 ? d[14] | (d[15] << 8) : 0;
+	const int bpp = d.size() > 18 ? d[16] : 0;
+	const size_t nOff = d.size() > 18 ? 18u + d[0] : 0;
+	if (d.size() <= 18 || d[2] != 2 || (bpp != 24 && bpp != 32) || w <= 0 || h <= 0
+		|| d.size() < nOff + (size_t)w * h * (bpp / 8))
+	{
+		Log("  R3D HANDS: %s is not a readable 24/32-bit uncompressed .tga - that hand is not drawn", pszPath);
+		return nullptr;
+	}
+	const bool bTop = (d[17] & 0x20) != 0;
+	std::vector<unsigned char> px((size_t)w * h * 4);
+	for (int y = 0; y < h; ++y)
+		for (int x = 0; x < w; ++x)
+		{
+			const unsigned char* s = &d[nOff + ((size_t)(bTop ? y : h - 1 - y) * w + x) * (bpp / 8)];
+			unsigned char* o = &px[((size_t)y * w + x) * 4];
+			o[0] = s[2]; o[1] = s[1]; o[2] = s[0]; o[3] = (bpp == 32) ? s[3] : 255;
+		}
+	D3D11_TEXTURE2D_DESC td{};
+	td.Width = (UINT)w; td.Height = (UINT)h; td.MipLevels = 0; td.ArraySize = 1;
+	td.Format = DXGI_FORMAT_R8G8B8A8_UNORM; td.SampleDesc.Count = 1; td.Usage = D3D11_USAGE_DEFAULT;
+	td.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
+	td.MiscFlags = D3D11_RESOURCE_MISC_GENERATE_MIPS;
+	ID3D11Texture2D* pT = nullptr;
+	if (SUCCEEDED(g_pDev->CreateTexture2D(&td, nullptr, &pT)))
+	{
+		g_pCtx->UpdateSubresource(pT, 0, nullptr, px.data(), (UINT)w * 4, 0);
+		if (SUCCEEDED(g_pDev->CreateShaderResourceView(pT, nullptr, &pSRV)))
+			g_pCtx->GenerateMips(pSRV);
+		pT->Release();
+	}
+	s_Tex[pszPath] = pSRV;
+	Log("  R3D HANDS: %s %dx%d %s", pszPath, w, h, pSRV ? "loaded" : "FAILED to become a texture");
+	return pSRV;
+}
+
+// R3D_PublishHands: Cate's hands for this frame. See VRShared.h / VRHands.cpp.
+// ---------------------------------------------------------------------------
+extern "C" void __cdecl R3D_PublishHands(const VRHandsFrame* p)
+{
+	RenderGuard _renderGuard;
+	if (!p || IsBadReadPtr(p, offsetof(VRHandsFrame, verts))) return;
+	if (p->nMagic != VRHANDS_MAGIC || p->nVersion != VRHANDS_VERSION) return;
+	if (p->nRuns > 2 || p->nVerts > VRHANDS_MAX_VERTS) return;
+	if (!g_pHands) g_pHands = new VRHandsFrame();
+	memcpy(g_pHands, p, offsetof(VRHandsFrame, verts));
+	if (p->nVerts)
+		memcpy(g_pHands->verts, p->verts, (size_t)p->nVerts * sizeof(VRHandVert));
+	g_nHandsTick = GetTickCount();
+}
 
 // R3D_PublishPrims - the client's effects for this frame. See VRShared.h.
 // ---------------------------------------------------------------------------

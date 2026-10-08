@@ -40,7 +40,7 @@ closes and says what to do.
 
 The desktop shows a steady view from your right eye while you play, for
 streaming or recording: it follows your turns but not the small movements of
-your head, and keeps the horizon level (Options > VR > Steady desktop
+your head, and keeps the horizon level (VR Options > Screen and Aim > Steady desktop
 view turns it off for the plain eye). Alt-tab freely: the game keeps running
 in the headset.
 
@@ -81,7 +81,31 @@ Right hand aims and fires; the gun sits where your controller is.
 | right stick click | weapon wheel: click, point with the stick, trigger or click to take |
 | menu button (left) | the menu |
 | left stick click, in the menu | photo mode: hides the menu so you can look around the paused world and take your own screenshot; click again to bring it back |
-| hold the Meta button | recenter (also Options > VR > Recenter) |
+| hold the Meta button | recenter (also VR Options > Recenter) |
+
+**On the Steam Frame** the left controller has a D-pad instead of X and Y, so
+the buttons are laid out like a gamepad:
+
+| control | does |
+|---|---|
+| A / B | jump / duck |
+| Y / X | use / reload |
+| D-pad left / right | previous / next weapon (the trigger takes it) |
+| D-pad down | holster |
+| D-pad up | quick save |
+| right shoulder | next ammo type |
+| Menu or View | the menu |
+
+Triggers, grips, sticks and stick clicks work as on the Quest. In the menus
+the D-pad moves the selection, A picks and B goes back.
+
+**Change any button: VR Options > Controls.** Each controller keeps
+its own map, and the page shows the one in your hands. A button only ever does
+one job, so to swap two actions set one of them to (none) first. Reset to
+defaults puts everything back. Pushing the right stick up or down can
+be a button too: set Jump to Right stick up and Duck to Right stick down, as
+many VR games do, and A and B are free for other actions. The fire trigger, the
+grips, moving and turning, and the menu button stay where they are.
 
 A red dot marks where the gun is pointing, on the surface or the body it will
 hit. A green reticle in the middle of your view means there is something
@@ -95,7 +119,7 @@ bring your other hand to the gun and hold its grip, and a second hand appears on
 the pistol's grip. While it is there, that grip does not make you run. It is
 for the look and feel only; aiming is the same either way.
 
-**Left-handed? Options > VR > Leftorium (left-handed)** swaps the hands: the gun
+**Left-handed? VR Options > Hands and Weapons > Leftorium (left-handed)** swaps the hands: the gun
 and its trigger go in your left hand (drawn as a left-handed gun), the
 flashlight in your right, and the hand buttons above swap sides with them. The
 sticks stay where they are (move on the left, turn on the right) unless you
@@ -116,28 +140,57 @@ way.
 
 ## Options
 
-In the game: Options > VR has Recenter, Show body and See yourself in
-mirrors (both on), the Leftorium (left-handed play),
-snap or smooth turning, turn speed, steering with both grips, the gun's size
-and how far it follows your hand, the aim dot, VR captions, head bob, weapon
-sway, large menu text, and Resolution %: how sharp the world is, as a
-percentage of your headset's own resolution (100 by default). It applies the
-next time you start the game; lower it if an older graphics card cannot hold
-90 fps.
+**Options** in the headset is short: VR Options first, then Game,
+Performance and Sound. Display, Controls (keyboard, mouse and joystick),
+Interface and Jukebox are behind **Show advanced options**. Open Options from
+the pause menu or the main menu.
 
-Everything is also a console variable, set in `game\autoexec.cfg` or passed to
-the launcher. A few more that are not on that page:
+**VR Options** has Recenter and a row for each of these pages:
 
-| cvar | default | does |
-|---|---|---|
-| `VRHaptics` | 1 | controller rumble on firing and when hit |
-| `VRHapticsDamage` | 1 | the rumble when hit, on its own |
-| `VRSupportHand` | 1 | the second hand on a pistol |
-| `VRSupportRangeCm` | 22 | how close the other hand must be to the gun hand |
-| `VRWheelSize` | 1.0 | the weapon wheel's size |
-| `VRParticleScale` | 8 | how large smoke, steam and sparks are |
+- **Turning and Moving:** snap or smooth turning, turn speed, swap sticks,
+  Walk direction (Body, Head or Off hand: which way the stick's forward
+  goes), Analog walking (how far you push the stick sets your speed),
+  steering with both grips.
+- **Your Body:** Show body and See yourself in mirrors (both on), head
+  bob.
+- **Hands and Weapons:** the Leftorium (left-handed play), whether the gun
+  follows your hand, the gun's size, how far it follows your hand, weapon sway,
+  controller rumble, and Cate's hands (on by default): her own gloved hands on your
+  controllers, curled round the gun you hold, in the gloves of the outfit she
+  is wearing (Setup makes those from your copy of the game).
+- **Physical Play:** use the game with your body. The first row sets them all
+  at once (Buttons or Physical); every button way keeps working either way.
+  - **Holsters on the body:** grip at your gun-side hip for the pistol, over
+    your gun-side shoulder for the long gun, at your chest for the current
+    gadget, at the front of your belt for the coin and lipsticks. Grip at a
+    holster again to put the weapon back. Holster height moves them all.
+  - **Manual reload:** the reload button drops the clip; grip at the pouch on
+    your other hip and bring the new clip to the gun.
+  - **Swing to hit:** a fast punch lands. As in the original game, only a blow
+    to the head of someone who has not seen you takes them down.
+  - **Wrist display:** health, armor and ammo on the back of your off-hand
+    wrist; turn it toward you like a watch to read it.
+  - **Glasses to your eyes:** Cate's sunglasses (camera, mine detector,
+    infrared) go on when you raise them to your eyes, and stay on when you
+    lower your hand; the trigger then takes photos. Bring your hand back to your
+    eyes and squeeze the grip to take them off.
+  - **Throw by hand:** with the coin or a lipstick, hold the trigger, swing and
+    let go. It flies the way your hand was moving, as hard as you threw it.
+  - **Two hands on long guns:** with a rifle, SMG or shotgun, grip its front
+    with your other hand and it aims from hand to hand, steadier. Open your
+    hand to go back to one.
+- **Screen and Aim:** the aim dot and its size, VR captions, large menu text,
+  the steady desktop view, and Resolution %: how sharp the world is, as a
+  percentage of your headset's own resolution (100 by default). It applies the
+  next time you start the game; lower it if an older graphics card cannot hold
+  90 fps.
+- **Controls:** which button does what (see Controls above).
 
----
+**On an omnidirectional treadmill** (Omni One, KAT Walk and the like), set
+**Walk direction** to Head and turn Analog walking on. Forward then
+follows wherever you face, turning your body turns you in the game, and your
+pace sets your speed: walk slowly to creep, speed up to run. The right stick
+still turns you if you want it to.
 
 ## What works, and what does not
 
@@ -158,13 +211,13 @@ and SteamVR headsets such as the Steam Frame.
 **Known issues:**
 
 - The game has not been played end to end in VR. Individual missions have.
-- In cutscenes, characters sometimes slide into place just after a camera cut.
-  The original scenes move them into position just outside the flat camera's
-  narrower view; a headset's wider view shows it.
 - The controls are mapped for Meta Quest (Touch) controllers, which is what
-  Virtual Desktop, Meta Quest Link and SteamVR-with-a-Quest all present. Other
-  controllers under SteamVR have no mapping of ours; SteamVR's own Controller
-  Bindings screen can map them, untested.
+  Virtual Desktop, Meta Quest Link and SteamVR-with-a-Quest all present, and
+  for the Steam Frame's own controllers. Other controllers under SteamVR have no
+  mapping of ours; SteamVR's own Controller Bindings screen can map them,
+  untested.
+- In Mastermind's fifth scene, two mirrors facing each other show each other
+  as plain glass.
 - Dialogue text could be larger; it is limited by the font sheet.
 - Some lamps in dark interiors read dimmer than they should. This may already
   be fixed: several lighting settings were among the ones setup switches on
@@ -181,6 +234,11 @@ chosen. You can re-run it yourself:
 ```
 powershell -ExecutionPolicy Bypass -File tools\repair-settings.ps1
 ```
+
+**HD texture packs are not supported yet.** With the community's ESRGAN x4 pack
+in `game\custom`, a level can take several minutes to load behind a frozen
+loading screen, and the game can close while it loads. Keep `game\custom` empty
+for now; support is planned for a later update.
 
 **The main menu changes on a Friday.** That is not a fault and not ours: the
 Modernizer this is built on picks a different main-menu layout by the date, a
@@ -210,8 +268,6 @@ Every project this stands on:
   comes from: render the world twice per frame, once per eye, and leave the
   simulation alone. No line of its code is here (F.E.A.R. is a different engine
   and a different renderer), but the idea and its proof are theirs.
-- The optional HD texture packs are the community's ESRGAN upscales. They are
-  **not included** and never will be; download them from their authors.
 
 ## Building from source
 

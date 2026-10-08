@@ -771,6 +771,14 @@ void R2D_SetTarget(ID3D11RenderTargetView* pRTV, int nPixW, int nPixH, int nCoor
 	g_nPixW = nPixW; g_nPixH = nPixH;
 }
 
+ID3D11ShaderResourceView* R2D_SurfaceSRV(const void* pKey, const void* pPixels, int nPitch, int nW, int nH)
+{
+	if (!g_pDev || !g_pCtx || !pPixels || nW <= 0 || nH <= 0) return nullptr;
+	if (TexEntry* f = Find(pKey)) { f->bDirty = true; f->bSnapValid = false; }
+	TexEntry* e = Upload(pKey, pPixels, nPitch, nW, nH);
+	return e ? SrvOf(e) : nullptr;
+}
+
 void R2D_Invalidate(const void* pKey)
 {
 	TexEntry* e = Find(pKey);

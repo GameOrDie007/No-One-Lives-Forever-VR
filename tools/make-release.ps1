@@ -113,6 +113,14 @@ $Ship = @(
     @{ from = 'host\openxr_loader.dll'; to = 'host\openxr_loader.dll';  what = 'the OpenXR loader' },
     @{ from = 'config\vrtune.cfg';     to = 'game\vrtune.cfg';         what = 'the tuned muzzle points, every gun, tuned in headset testing' },
     @{ from = 'config\vrweapons.cfg';   to = 'game\vrweapons.cfg';       what = 'per-weapon view-model scale overrides' },
+    # Cate's hands (Game Or Die Hands): our hand model reshaped into a woman's hand, and our own
+    # painted glove. Ours: built from a CC0 base (see THIRD-PARTY-NOTICES.md). Her outfits' own
+    # gloves are made from the game's files and never ship.
+    @{ from = 'art\gdh\cate_hand_l.gdh'; to = 'game\gdh\cate_hand_l.gdh'; what = 'Cate''s left hand: mesh, skeleton, finger poses' },
+    @{ from = 'art\gdh\cate_hand_r.gdh'; to = 'game\gdh\cate_hand_r.gdh'; what = 'Cate''s right hand' },
+    @{ from = 'art\gdh\cate_glove.tga';  to = 'game\gdh\cate_glove.tga';  what = 'our painted glove for her hands' },
+    @{ from = 'art\gdh\glove_detail.tga'; to = 'game\gdh\glove_detail.tga'; what = 'the glove''s creases, laid over her outfits'' gloves at setup (from the CC0 base, ours)' },
+    @{ from = 'host\gdh_setup.exe';      to = 'tools\gdh_setup.exe';      what = 'makes her outfits'' own gloves at setup, from the player''s own game files (Game Or Die Hands, ours)' },
     @{ from = 'game\SDL2.dll';         to = 'game\SDL2.dll';           what = 'SDL2 - the client DLL imports it and retail has none' },
     @{ from = 'game\DINPUT.dll';       to = 'game\DINPUT.dll';         what = 'the keyboard proxy - chat and console keys in VR' },
     @{ from = 'tools\play-vr.ps1';      to = 'tools\play-vr.ps1';       what = 'the launcher' },

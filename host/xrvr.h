@@ -105,6 +105,13 @@ public:
 		float		fStickX  = 0.0f;	// -1..+1, right positive
 		float		fStickY  = 0.0f;	// -1..+1, up positive
 		uint32_t	nButtons = 0;		// see kBtn* below
+		// Game Or Die Hands: the palm (grip pose) in this hand's aim space, and
+		// the touch sensors. bTouchKnown false on a controller without them.
+		XrPosef		aimToGrip{};
+		bool		bGripValid    = false;
+		bool		bTriggerTouch = false;
+		bool		bThumbTouch   = false;
+		bool		bTouchKnown   = false;
 	};
 	const HandState& Hand(int i) const { return m_Hands[i]; }
 
@@ -115,7 +122,23 @@ public:
 		kBtnPrimary   = 1 << 2,		// A on the right hand, X on the left
 		kBtnSecondary = 1 << 3,		// B / Y
 		kBtnThumbClick= 1 << 4,
-		kBtnMenu      = 1 << 5
+		kBtnMenu      = 1 << 5,
+		// THE STEAM FRAME'S OWN BUTTONS, set only under its native profile.
+		// The Frame is a split gamepad: the right hand carries A/B/X/Y and a
+		// menu button, the left a D-pad and a View button, and each has a
+		// shoulder. Primary/secondary/menu above are ALSO set on the Frame,
+		// laid out as SteamVR's own Touch remap lays them, so a client that
+		// ignores these bits plays exactly as it did before.
+		kBtnPadX      = 1 << 6,		// right X
+		kBtnPadY      = 1 << 7,		// right Y
+		kBtnDpadUp    = 1 << 8,		// left D-pad
+		kBtnDpadDown  = 1 << 9,
+		kBtnDpadLeft  = 1 << 10,
+		kBtnDpadRight = 1 << 11,
+		kBtnShoulder  = 1 << 12,	// either hand's shoulder, on that hand
+		kBtnView      = 1 << 13,	// left View
+		kBtnPadMenu   = 1 << 14,	// right Menu
+		kBtnFrame     = 1 << 15		// on both hands: the Frame profile is the one bound
 	};
 
 	void	Shutdown();
@@ -344,6 +367,8 @@ private:
 	bool			m_bRunning	= false;
 	bool			m_bViewsValid = false;
 	bool			m_bHaveRefreshExt = false;
+	bool			m_bHaveFrameExt = false;	// XR_VALVE_frame_controller_interaction listed
+	bool			m_bFrameProfile = false;	// and it is the profile the runtime bound
 	int				m_nFail = 0;
 	bool			m_bLoggedEyeFov = false;
 
@@ -354,6 +379,18 @@ private:
 	XrAction		m_aMenu = XR_NULL_HANDLE;
 	XrAction		m_aStickX = XR_NULL_HANDLE, m_aStickY = XR_NULL_HANDLE;
 	XrAction		m_aHaptic = XR_NULL_HANDLE;
+	// Steam Frame only; bound on no other profile.
+	XrAction		m_aPadX = XR_NULL_HANDLE, m_aPadY = XR_NULL_HANDLE;
+	XrAction		m_aDpadUp = XR_NULL_HANDLE, m_aDpadDown = XR_NULL_HANDLE;
+	XrAction		m_aDpadLeft = XR_NULL_HANDLE, m_aDpadRight = XR_NULL_HANDLE;
+	XrAction		m_aShoulder = XR_NULL_HANDLE, m_aView = XR_NULL_HANDLE;
+	XrAction		m_aPadMenu = XR_NULL_HANDLE;
+	// Game Or Die Hands: the palm and the touch sensors.
+	XrAction		m_aGripPose = XR_NULL_HANDLE;
+	XrAction		m_aTriggerTouch = XR_NULL_HANDLE, m_aThumbTouch = XR_NULL_HANDLE;
+	XrSpace			m_GripSpace[2] = { XR_NULL_HANDLE, XR_NULL_HANDLE };
+	bool			SuggestFrameBindings(bool bOldShoulderName, bool bHands = true);
+	void			NoteInteractionProfile();
 	XrPath			m_HandPath[2]{};
 	XrSpace			m_AimSpace[2]{ XR_NULL_HANDLE, XR_NULL_HANDLE };
 	HandState		m_Hands[2];

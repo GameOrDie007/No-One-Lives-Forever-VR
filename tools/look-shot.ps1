@@ -16,6 +16,10 @@ param(
     [string]  $Out    = 'logs\look.png',
     [string]  $World  = '',           # empty = quick-load the save instead
     [int]     $Wait   = 18,
+    # MORE THAN ONE PICTURE, -ShotGapMs apart: <Out>-2.png, -3.png ... for
+    # anything judged by whether it MOVES (water, sprites). One still cannot.
+    [int]     $Shots  = 1,
+    [int]     $ShotGapMs = 250,
     [string[]]$Set    = @(),
     # DELIBERATELY 2560x1384, WHICH IS NO LONGER WHAT THE GAME SHIPS AT.
     #
@@ -92,6 +96,10 @@ param(
     # The author's own instruction is that the pack loads AFTER Modernizer,
     # because the last mount wins.
     [switch]  $Pack,
+    # EXTRA ARCHIVES WHERE THE PRODUCT MOUNTS game\custom: after the retail
+    # ones and before Modernizer.rez (run.ps1). A file outside the game folder
+    # mounts fine, e.g. -ExtraRez '..\packs\HD-TEX1-X4.REZ'.
+    [string[]]$ExtraRez = @(),
     # WHICH HALF, for bisecting. HD-COMMON1 holds the 2D layer's art -
     # STATBAR, MENU and INTERFACE - as well as guns, characters and
     # attachments; HD-COMMON2 is PROPS only. The crash phase names the 2D
@@ -108,6 +116,9 @@ param(
     [string]  $EyeFov = '',
     [string]  $At = '',
     [double]  $AtDelay = 4.0,
+    # ANOTHER WINDOW TAKES THE FOCUS this many seconds in, for 4 s: what
+    # Virtual Desktop, Steam or a notification does to a player in VR.
+    [int]     $StealFocusAt = 0,
     # A MOVING HEAD. fakehost sweeps the orientation by default and this script
     # has always overridden that with --static, which is right for a repeatable
     # capture and useless for anything that has to prove a picture is LIVE
@@ -133,7 +144,19 @@ param(
     # the same camera. Every pixel that then differs is a fault in our pass:
     # something sampled, seeded or clocked per PASS instead of per FRAME. That
     # is how the per-eye animation clock was found. See tools\eye-identity.py.
-    [double]  $Ipd = -1
+    [double]  $Ipd = -1,
+    # PHYSICAL PLAY AT THE DESK: drive both hands from a fakehost key file
+    # (see fakehost --script) starting -ScriptAt seconds in, once the world is
+    # up. -Pos fixes the fake head's position (x,y,z metres) so slot positions
+    # do not depend on the head's yaw.
+    [string]  $Script = '',
+    [double]  $ScriptAt = 14.0,
+    # Restart the script every this many seconds (a soak that keeps playing).
+    [double]  $ScriptLoop = 0,
+    [string]  $Pos = '',
+    # NO HEADSET: start no fake host, so the game runs as it would with no
+    # VR runtime at all (it must still start, flat).
+    [switch]  $NoHost
 )
 
 $ErrorActionPreference = 'Stop'
@@ -167,8 +190,10 @@ if (Get-Process lithtech -ErrorAction SilentlyContinue) {
     Write-Host '  STOPPED: the game is already running (a player may be in it). Close it first; nothing was touched.' -ForegroundColor Red
     exit 1
 }
+# ONLY THIS TREE'S FAKE HOST: another project's desk run may be using its own.
+$myFake = Join-Path $PSScriptRoot 'fakehost.py'
 Get-Process python   -ErrorAction SilentlyContinue |
-    Where-Object { $_.CommandLine -like '*fakehost*' } | ForEach-Object { try { $_.Kill() } catch {} }
+    Where-Object { $_.CommandLine -and $_.CommandLine.Contains($myFake) } | ForEach-Object { try { $_.Kill() } catch {} }
 Start-Sleep -Milliseconds 600
 
 $fakeLog = Join-Path $Root 'logs\fakehost-look.log'
@@ -196,16 +221,22 @@ if ($Stick)    { $fakeArgs += @('--stick', $Stick) }
 if ($RStick)   { $fakeArgs += @('--rstick', $RStick) }
 if ($Buttons)  { $fakeArgs += @('--buttons', "$Buttons", '--buttons-at', "$ButtonsAt", '--buttons-hand', $ButtonsHand) }
 if ($Trigger)  { $fakeArgs += @('--trigger', $Trigger, '--trigger-at', "$TriggerAt") }
-$fake = Start-Process -FilePath 'python' `
-        -ArgumentList $fakeArgs `
-        -PassThru -WindowStyle Minimized -RedirectStandardOutput $fakeLog
-Start-Sleep -Seconds 2
-if ($fake.HasExited) { throw "fake host exited (exit $($fake.ExitCode))" }
+if ($Script)   { $fakeArgs += @('--script', ('"' + (Resolve-Path $Script).Path + '"'), '--script-at', "$ScriptAt") }
+if ($Script -and $ScriptLoop -gt 0) { $fakeArgs += @('--script-loop', "$ScriptLoop") }
+if ($Pos)      { $fakeArgs += @('--pos', $Pos) }
+$fake = $null
+if (-not $NoHost) {
+    $fake = Start-Process -FilePath 'python' `
+            -ArgumentList $fakeArgs `
+            -PassThru -WindowStyle Minimized -RedirectStandardOutput $fakeLog
+    Start-Sleep -Seconds 2
+    if ($fake.HasExited) { throw "fake host exited (exit $($fake.ExitCode))" }
+}
 
 Add-Type -AssemblyName System.Windows.Forms
 $primary = [System.Windows.Forms.Screen]::AllScreens | Where-Object { $_.Primary } | Select-Object -First 1
 $rez = @('NOLF.rez','NOLF2.rez','NOLFdll.rez','NOLFl.rez','custom',
-         'Nolfu003.rez','Nolfcres003.rez','NolfGoty.rez','Modernizer.rez')
+         'Nolfu003.rez','Nolfcres003.rez','NolfGoty.rez') + $ExtraRez + @('Modernizer.rez')
 if ($Pack) {
     # LAST, so it overrides. HD-COMMON only - the HD-TEX halves ship rewritten
     # .DAT levels and this renderer parses those itself.
@@ -306,9 +337,31 @@ $env:__COMPAT_LAYER = 'HIGHDPIAWARE'
 $env:SDL_WINDOWS_DPI_AWARENESS = 'system'
 $p = Start-Process -FilePath (Join-Path $Game 'lithtech.exe') -ArgumentList $a `
                    -WorkingDirectory $Game -PassThru
+$null = $p.Handle    # held now, or ExitCode reads empty once the process is gone
 for ($s = 0; $s -lt $Wait; $s++) {
     Start-Sleep -Seconds 1
-    if ($p.HasExited) { Write-Host "  game exited after $s s" -ForegroundColor Red; break }
+    if ($StealFocusAt -gt 0 -and $s -eq $StealFocusAt -and -not $p.HasExited) {
+        # The game has to HAVE the focus to lose it: launched from a visible
+        # console, it never had it, and the steal took nothing from it.
+        Add-Type -Name FgS -Namespace W -MemberDefinition @'
+[DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
+[DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+'@ -ErrorAction SilentlyContinue
+        $p.Refresh()
+        $front = $false
+        for ($try = 0; $try -lt 6 -and -not $front; $try++) {
+            [W.FgS]::SetForegroundWindow($p.MainWindowHandle) | Out-Null
+            Start-Sleep -Milliseconds 500
+            $front = ([W.FgS]::GetForegroundWindow() -eq $p.MainWindowHandle)
+        }
+        Write-Host "  the game is in front: $front; another window takes the focus for 4 s" -ForegroundColor Cyan
+        Start-Process powershell -ArgumentList '-NoProfile', '-Command', 'Start-Sleep 4' | Out-Null
+    }
+    if ($p.HasExited) {
+        # The exit code says how it ended: 0 is a clean quit by the game itself.
+        Write-Host "  game exited after $s s, exit code $($p.ExitCode)" -ForegroundColor Red
+        break
+    }
 }
 # The keys, once the world is up. Focus first: SendKeys goes to the foreground
 # window and the game is not it after a Start-Process.
@@ -362,6 +415,11 @@ if (-not $p.HasExited) {
     try {
         & (Join-Path $PSScriptRoot 'window-shot.ps1') -Out (Join-Path $Root $Out) -Width $ResW -Height $ResH |
             ForEach-Object { Write-Host ("    " + $_) -ForegroundColor DarkGray }
+        for ($n = 2; $n -le $Shots -and -not $p.HasExited; $n++) {
+            Start-Sleep -Milliseconds $ShotGapMs
+            & (Join-Path $PSScriptRoot 'window-shot.ps1') -Out ((Join-Path $Root $Out) -replace '\.png$', "-$n.png") -Width $ResW -Height $ResH |
+                ForEach-Object { Write-Host ("    " + $_) -ForegroundColor DarkGray }
+        }
     } catch { Write-Host "    window grab failed: $_" -ForegroundColor Yellow }
 }
 try { $p.CloseMainWindow() | Out-Null } catch {}

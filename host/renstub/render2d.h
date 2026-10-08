@@ -102,6 +102,13 @@ void R2D_SetMenuZoom(float f, float ax, float ay);
 
 // The engine wrote into a surface, so its texture is stale.
 void R2D_Invalidate(const void* pKey);
+// A SURFACE THE CLIENT DREW, as a texture for the 3D pass (VRPRIM_F_SURFACE,
+// physical play's wrist display). Uploaded again on every call: the panel is
+// small and the client redraws it whenever a number changes.
+ID3D11ShaderResourceView* R2D_SurfaceSRV(const void* pKey, const void* pPixels, int nPitch, int nW, int nH);
+// dllmain.cpp: the bits behind a surface handle the client passed, if it is
+// one of ours; false for anything else.
+bool Stub_SurfaceBits(void* h, const void** ppKey, const void** ppBits, int* pnPitch, int* pnW, int* pnH);
 // Copy a back-buffer rect into a GPU texture that stands in for this
 // surface's bits until the next Invalidate. See the note in render2d.cpp.
 bool R2D_Snapshot(const void* pKey, int sx, int sy, int nW, int nH);

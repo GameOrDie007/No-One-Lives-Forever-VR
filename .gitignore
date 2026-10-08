@@ -25,6 +25,7 @@ host/eyeprobe.exe
 host/openxr_loader.dll
 libs/
 host/nolfvr.exe
+host/gdh_setup.exe
 host/nolfvr-aug13.exe
 
 # The d3d.ren pass-through shim's build output. Source is in host/renshim/.

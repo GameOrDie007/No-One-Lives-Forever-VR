@@ -536,15 +536,18 @@ ID3D11ShaderResourceView* Dtx_CreateSRV(ID3D11Device* pDev,
 						 info.nWidth >> nSkip, info.nHeight >> nSkip,
 						 nSkip, (nSkip == 1) ? "" : "s");
 			}
-			info.nWidth  = (info.nWidth  >> nSkip) ? (info.nWidth  >> nSkip) : 1;
-			info.nHeight = (info.nHeight >> nSkip) ? (info.nHeight >> nSkip) : 1;
-			info.nMips  -= nSkip;
 		}
 	}
 
+	// ONLY THE GPU COPY SHRINKS. The size handed back in *pOut stays the
+	// file's: world surfaces divide their texel coordinates by it and sprites
+	// are sized from it, so reporting the capped size would tile a capped wall
+	// texture twice over and halve a capped sprite. Nothing but the D3D11
+	// texture below needs to know a level was dropped.
 	D3D11_TEXTURE2D_DESC td = {};
-	td.Width = info.nWidth; td.Height = info.nHeight;
-	td.MipLevels = info.nMips; td.ArraySize = 1;
+	td.Width  = (info.nWidth  >> nSkip) ? (info.nWidth  >> nSkip) : 1;
+	td.Height = (info.nHeight >> nSkip) ? (info.nHeight >> nSkip) : 1;
+	td.MipLevels = info.nMips - nSkip; td.ArraySize = 1;
 	td.Format = info.fmt; td.SampleDesc.Count = 1;
 	td.Usage = D3D11_USAGE_IMMUTABLE; td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
 
@@ -693,6 +696,7 @@ namespace
 void Dtx_SetLog(R3D_LogFn pfnLog) { g_pfnLog = pfnLog; }
 
 void Dtx_SetMaxDim(int nMax) { g_nTexMaxDim = nMax; }
+int  Dtx_GetMaxDim() { return g_nTexMaxDim; }
 long Dtx_CappedCount()       { return g_nTexCapped; }
 
 uint32_t Dtx_SelfTest(R3D_LogFn pfnLog, uint32_t* pnTotal)

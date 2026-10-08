@@ -33,10 +33,11 @@ import sys
 import time
 
 NAME = "Local\\NOLFVR_SharedState"
-SIZE = 380      # v19: nHostPid appended after v18's recenter
+SIZE = 452      # v20: the palm (grip in aim space) and touch sensors appended; left zero here -
+                # no palm pose (the hands use the aim pose) and no touch (the thumb rests)
 O_HOST_PID = 376
 MAGIC = 0x56464C4E
-VERSION = 19
+VERSION = 20
 
 # Offsets, from VRShared.h. Every field is four bytes with four-byte alignment,
 # which is the whole reason that header forbids anything else - the layout has
@@ -262,6 +263,23 @@ def main():
                          "bump nRecenterGen and re-origin the head 0.3 m LOWER from then on "
                          "(a sit-down: under the client's half-metre jump rule, so only the "
                          "generation can make it re-reference).")
+    # PHYSICAL PLAY AT THE DESK: hands that MOVE along a script. Every other
+    # hand switch here holds a pose; a holster grab, a swing and a clip brought
+    # to the gun are all journeys, and a hand's speed only exists between two
+    # places. The script is a JSON file of keys per hand:
+    #   {"keys": [{"t": 0.0, "hand": "right", "pos": [x,y,z], "ypr": [y,p,r],
+    #              "grip": 0, "trigger": 0, "buttons": 0}, ...]}
+    # Position and angles are interpolated in a straight line between one key
+    # and the next of the same hand, so a swing from A to B over dt runs at
+    # exactly |B-A|/dt metres a second: the number the client's log must
+    # report back. Grip, trigger and buttons are STEPS: held from their key
+    # until the next key of that hand. Times are seconds from --script-at.
+    ap.add_argument("--script", default=None, metavar="FILE",
+                    help="drive both hands from a JSON key file (see above)")
+    ap.add_argument("--script-at", type=float, default=0.0, metavar="SECS",
+                    help="start the script this many seconds in (the world must be up)")
+    ap.add_argument("--script-loop", type=float, default=0.0, metavar="SECS",
+                    help="restart the script every SECS seconds (0 = play once)")
     ap.add_argument("--quiet", action="store_true")
     ap.add_argument("--version", type=int, default=VERSION,
                     help="wire version to advertise; 9 is the 13 August client")
@@ -332,6 +350,47 @@ def main():
         while len(parts) < 3:
             parts.append(0.0)
         static = tuple(parts[:3])
+
+    script = None
+    if args.script:
+        import json
+        with open(args.script, "r") as f:
+            doc = json.load(f)
+        script = {0: [], 1: []}
+        for k in doc.get("keys", []):
+            h = {"left": 0, "right": 1}[k.get("hand", "right")]
+            script[h].append(k)
+        for h in (0, 1):
+            script[h].sort(key=lambda k: float(k["t"]))
+        print("fake host: SCRIPT %s - %d left keys, %d right keys, from %.1f s%s"
+              % (args.script, len(script[0]), len(script[1]), args.script_at,
+                 (", every %.1f s" % args.script_loop) if args.script_loop > 0 else ""))
+
+    def script_hand(h, ts):
+        """The scripted hand at ts seconds into the script: pos, ypr, grip,
+        trigger, buttons - or None when that hand has no keys."""
+        keys = script[h]
+        if not keys:
+            return None
+        prev = keys[0]
+        nxt = None
+        for k in keys:
+            if float(k["t"]) <= ts:
+                prev = k
+            else:
+                nxt = k
+                break
+        pos = list(prev.get("pos", [0.2 if h else -0.2, 1.3, -0.3]))
+        ypr = list(prev.get("ypr", [0.0, 0.0, 0.0]))
+        if nxt is not None and float(prev["t"]) <= ts:
+            t0k, t1k = float(prev["t"]), float(nxt["t"])
+            a = (ts - t0k) / (t1k - t0k) if t1k > t0k else 1.0
+            p1 = nxt.get("pos", pos)
+            y1 = nxt.get("ypr", ypr)
+            pos = [pos[i] + (p1[i] - pos[i]) * a for i in range(3)]
+            ypr = [ypr[i] + (y1[i] - ypr[i]) * a for i in range(3)]
+        return (pos, ypr, float(prev.get("grip", 0)), float(prev.get("trigger", 0)),
+                int(prev.get("buttons", 0)))
 
     buf = mmap.mmap(-1, SIZE, tagname=NAME, access=mmap.ACCESS_WRITE)
 
@@ -441,6 +500,7 @@ def main():
     seq = 0
     frame = 0
     recentered = False
+    script_said = {}
     t0 = time.perf_counter()
     next_report = t0 + 1.0
     period = 1.0 / max(args.hz, 1.0)
@@ -557,6 +617,45 @@ def main():
                 put_f(base + H_POS + 0, hp[0])
                 put_f(base + H_POS + 4, hp[1])
                 put_f(base + H_POS + 8, hp[2])
+            # THE SCRIPTED HANDS, last, so they win over any held pose above.
+            # Before --script-at each hand rests at its first key with nothing
+            # pressed: the client sees both controllers from the first frame
+            # and every grip in the script is a fresh edge.
+            if script is not None:
+                tt = time.perf_counter() - t0
+                ts = tt - args.script_at
+                live = ts >= 0.0
+                if live and args.script_loop > 0.0:
+                    ts = ts % args.script_loop
+                for h in (0, 1):
+                    sh = script_hand(h, ts if live else -1.0)
+                    if sh is None:
+                        continue
+                    pos, ypr, grip, trig, btn = sh
+                    if not live:
+                        grip, trig, btn = 0.0, 0.0, 0
+                    if grip > 0.5:
+                        btn |= 2
+                    if trig > 0.5:
+                        btn |= 1
+                    base = O_HANDS + h * H_STRIDE
+                    put_u32(base + H_ACTIVE, 1)
+                    put_f(base + H_POS + 0, pos[0])
+                    put_f(base + H_POS + 4, pos[1])
+                    put_f(base + H_POS + 8, pos[2])
+                    put_f(base + H_YAW, ypr[0])
+                    put_f(base + H_PITCH, ypr[1])
+                    put_f(base + H_ROLL, ypr[2])
+                    put_f(base + H_GRIP, grip)
+                    put_f(base + H_TRIGGER, trig)
+                    put_u32(base + H_BUTTONS, btn)
+                    key = (h, round(grip), round(trig), btn)
+                    if script_said.get(h) != key:
+                        script_said[h] = key
+                        print("  script %6.2f s  %s hand at (%+.2f %+.2f %+.2f)  grip %d trigger %d buttons %#x"
+                              % (ts if live else -1.0, "right" if h else "left", pos[0], pos[1], pos[2],
+                                 round(grip), round(trig), btn))
+                        sys.stdout.flush()
             put_u32(O_ALIVE, GetTickCount())
             put_u32(O_SEQUENCE, seq * 2)         # even: done
 

@@ -61,6 +61,7 @@ Write-Host 'Compiling the renderer stub (x86)...' -ForegroundColor Cyan
 $output = cmd /c "`"$vcvars`" >nul 2>&1 && $($ver.Cmd) && cl $cl 2>&1"
 $clExit = $LASTEXITCODE
 $output | ForEach-Object { if ($_ -match 'error|fatal') { Write-Host $_ -ForegroundColor Red } }
+$output | ForEach-Object { if ($_ -match 'warning C') { Write-Host $_ -ForegroundColor Yellow } }
 
 if ($clExit -ne 0 -or -not (Test-Path $Out)) {
     $output | ForEach-Object { Write-Host $_ }

@@ -21,6 +21,7 @@ param(
     [string]$Cd1,                     # disc 1 (Data\NOLF2.REZ + the patches)
     [string]$Cd2,                     # disc 2 (Data\NOLF.REZ + Game\)
     [switch]$NoFontSeed,              # skip the one retail launch that builds FontData.fnt
+    [switch]$NoSearch,                # do not look around for the game (tests the drop prompt)
     [Parameter(ValueFromRemainingArguments = $true)]
     [string[]]$Dropped                # whatever was dragged onto Setup.bat
 )
@@ -179,7 +180,7 @@ foreach ($p in $Dropped) { if ($p -and -not $p.StartsWith("-")) { Offer $p } }
 # re-checks the game folder and redoes the steps after the copy.
 $already = (Has-File $game "NOLF.rez" 0) -and (Has-File $game "lithtech.exe" 0)
 
-if ($sources.Count -eq 0 -and -not $already) {
+if ($sources.Count -eq 0 -and -not $already -and -not $NoSearch) {
     Line "Nothing named, so looking around..."
     $guesses = New-Object System.Collections.Generic.List[string]
     $guesses.Add((Split-Path -Parent $pkg))
@@ -200,17 +201,65 @@ if ($sources.Count -eq 0 -and -not $already) {
     }
 }
 
+# ENOUGH TO GO ON: an installed game, or both discs.
+function Have-Enough { return ($sources.ContainsKey("Install") -or ($sources.ContainsKey("Disc1") -and $sources.ContainsKey("Disc2"))) }
+function Still-Need {
+    if ($sources.ContainsKey("Disc1")) { return "disc 2 (nolf_goty_cd2.iso, or the second disc itself)" }
+    if ($sources.ContainsKey("Disc2")) { return "disc 1 (nolf_goty_cd1.iso, or the first disc itself)" }
+    return "your installed game folder, or both discs"
+}
+
+# A DROPPED LINE, split the way Windows writes it: each path quoted when it has
+# a space, several paths separated by spaces. A path typed by hand may have
+# spaces and no quotes, so the whole line is tried as ONE path first and only
+# split when it is visibly several. Test-Path is wrapped: a stray quote or a
+# wildcard makes it throw rather than say no.
+function Split-DropLine($line) {
+    $whole = $line.Trim().Trim('"')
+    $isOne = $false
+    try { $isOne = Test-Path -LiteralPath $whole } catch { $isOne = $false }
+    if ($isOne) { return @($whole) }
+    $parts = @()
+    foreach ($m in [regex]::Matches($line, '"([^"]+)"|(\S+)')) {
+        $v = if ($m.Groups[1].Success) { $m.Groups[1].Value } else { $m.Groups[2].Value }
+        if ($v) { $parts += $v }
+    }
+    return $parts
+}
+
 if ($sources.Count -eq 0 -and -not $already) {
     Line ""
     Bad "Could not find No One Lives Forever."
     Line ""
-    Line "  Drag your installed game folder onto Setup.bat,"
-    Line "  or drag your two NOLF GOTY discs (the .iso files) onto it together,"
-    Line "  or name it directly:"
+    Line "  Setup needs ONE of these:"
+    Line "    - your installed game folder (the one with lithtech.exe and NOLF.rez in it)"
+    Line "    - BOTH Game of the Year discs: nolf_goty_cd1.iso and nolf_goty_cd2.iso,"
+    Line "      or the discs themselves in the drive"
     Line ""
-    Line '      Setup.bat -Install "D:\Games\No One Lives Forever"'
+    Line "  Drag it onto THIS window and press Enter. Several at once is fine."
+    Line "  Press Enter on its own to stop."
     Line ""
-    exit 1
+    # THE LAST THING BETWEEN A PLAYER AND GIVING UP, so it takes drops until it
+    # has enough and says what is still missing BY NAME after each one.
+    while (-not (Have-Enough)) {
+        $line = Read-Host "  drop here"
+        # End of input (a closed console, piped input): Read-Host gives $null.
+        if ($null -eq $line) { break }
+        $line = $line.Trim()
+        if ($line -eq "") { break }
+        LogLine "  dropped: $line"
+        foreach ($d in (Split-DropLine $line)) { Offer $d }
+        if (-not (Have-Enough)) { Warn ("still need: " + (Still-Need)) }
+    }
+    if (-not (Have-Enough)) {
+        Line ""
+        Line "  Nothing set up. You can also drag the game folder or both discs"
+        Line "  straight onto Setup.bat, or name it:"
+        Line ""
+        Line '      Setup.bat -Install "D:\Games\No One Lives Forever"'
+        Line ""
+        exit 1
+    }
 }
 Line ""
 
@@ -348,6 +397,22 @@ $cfg    = [System.IO.Path]::Combine($game, "autoexec.cfg")
 if ((Test-Path -LiteralPath $repair) -and (Test-Path -LiteralPath $cfg)) {
     & powershell -NoProfile -ExecutionPolicy Bypass -File $repair -Config $cfg | Out-Null
     Ok "game settings checked"
+}
+
+# ------------------------------------------------------- 6. Cate's gloves
+# Her outfits' own gloves for the VR hands (VR Options > Hands and Weapons), made
+# on this machine from the game's own files by tools\gdh_setup.exe: the fists'
+# model and each outfit's glove texture, read out of the .rez archives. Nothing of
+# the game's is shipped; without these the hands wear our painted glove.
+$gdhExe = [System.IO.Path]::Combine($here, "gdh_setup.exe")
+$gdhDir = [System.IO.Path]::Combine($game, "gdh")
+if ((Test-Path -LiteralPath $gdhExe) -and (Test-Path -LiteralPath ([System.IO.Path]::Combine($gdhDir, "cate_hand_r.gdh")))) {
+    $gdhOut = & $gdhExe nolf --game $game --hands $gdhDir --out $gdhDir 2>&1
+    $gdhRc = $LASTEXITCODE
+    foreach ($l in $gdhOut) { LogLine "  $l" }
+    $made = @(Get-ChildItem -LiteralPath $gdhDir -Filter "cate_glove_*.tga" -ErrorAction SilentlyContinue).Count
+    if ($gdhRc -eq 0) { Ok "Cate's gloves made from your game ($made outfits)" }
+    else { Warn "Cate's gloves could not be made - her hands will wear the painted glove" }
 }
 
 Line ""

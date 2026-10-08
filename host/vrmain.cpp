@@ -97,6 +97,17 @@ namespace
 			const XrVr::HandState& hs = xr.Hand(h);
 			VRHandState& out = g_pShared->Hands[h];
 			out.nActive = hs.bActive ? 1u : 0u;
+			// Game Or Die Hands (v20): the palm in aim space, the touch sensors.
+			g_pShared->nGripValid[h] = (hs.bActive && hs.bGripValid) ? 1u : 0u;
+			if (hs.bGripValid)
+			{
+				float* g = g_pShared->fAimToGrip[h];
+				g[0] = hs.aimToGrip.position.x; g[1] = hs.aimToGrip.position.y; g[2] = hs.aimToGrip.position.z;
+				g[3] = hs.aimToGrip.orientation.x; g[4] = hs.aimToGrip.orientation.y;
+				g[5] = hs.aimToGrip.orientation.z; g[6] = hs.aimToGrip.orientation.w;
+			}
+			g_pShared->nTouch[h] = (hs.bTouchKnown ? VRTOUCH_KNOWN : 0u)
+				| (hs.bTriggerTouch ? VRTOUCH_TRIGGER : 0u) | (hs.bThumbTouch ? VRTOUCH_THUMB : 0u);
 			if (!hs.bActive) continue;
 
 			out.fPosX = hs.pose.position.x;
@@ -490,6 +501,11 @@ int main(int argc, char** argv)
 		if (bMirror) mirror.FollowForeground(capture.Window());
 		if (!capture.IsWindowAlive()) { Msg("game window gone - shutting down"); break; }
 		if (!capture.GameAlive())     { Msg("game process gone - shutting down"); break; }
+		// The game is closing: end the headset view now. Waiting for the window
+		// to go showed the flat window (the exit splash) stretched over the
+		// whole view and then a frozen frame, about 4 s in all.
+		if (g_pShared && (g_pShared->nFlags & VRSHARED_F_QUITTING))
+		{ Msg("the game is closing - ending the headset view"); break; }
 
 		// Resolution changes resize the window under us. Everything sized from
 		// the client rect - crop offsets, eye size, swapchains - goes stale,
